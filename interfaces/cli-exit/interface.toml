@@ -1,0 +1,4 @@
+module = "CliExit"
+[[hosted]]
+leaf = "exit!"
+symbol_stem = "exit"

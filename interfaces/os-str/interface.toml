@@ -1,0 +1,12 @@
+# A types-only interface, like `io`: no hosted leaves, nothing wires it.
+#
+# `OsStr` is a NOMINAL with methods, which is exactly what `IOErr` is, and it
+# lives here rather than in the cmd-lib shim because the hosted interfaces and
+# the driver name it. A type the host boundary speaks cannot be owned by a
+# component sitting above that boundary.
+#
+# It replaces a structural alias, `Native.OsStr`, that existed only because I
+# believed a nominal could not be used here. It can: the app's `List(OsStr)`
+# and the hosted leaf's `List(OsStr)` are then the same type, so nothing has to
+# convert and argv keeps its bytes.
+module = "OsStr"

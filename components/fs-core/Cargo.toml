@@ -1,0 +1,23 @@
+[package]
+name = "fs-core"
+version = "0.0.0"
+edition = "2021"
+publish = false
+[lib]
+crate-type = ["rlib"]
+[dependencies]
+trantor-abi = "0.0.0"      # generated; the consumer's workspace patches it
+sync-io-core = { path = "../sync-io-core" }
+# The confined root's enforcement. cap-std resolves a path component by
+# component from a directory file descriptor (openat2 RESOLVE_BENEATH on Linux,
+# an O_NOFOLLOW walk elsewhere), so there is no separate containment check to
+# race against — resolution at the moment of use IS the check.
+cap-std = "4.0.3"
+# `open_at!`'s `follow_symlinks: False` beneath the root, and a directory
+# opened without following a final link.
+cap-fs-ext = "4.0.3"
+# O_NOFOLLOW and O_DIRECTORY for the unconfined open.
+libc = "=0.2.189"
+
+[dependencies.paste]
+version = "1"

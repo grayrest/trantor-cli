@@ -1,0 +1,22 @@
+module = "CliEnv"
+[[hosted]]
+leaf = "args!"
+symbol_stem = "args"
+[[hosted]]
+leaf = "var!"
+symbol_stem = "var"
+[[hosted]]
+leaf = "env!"
+symbol_stem = "env"
+[[hosted]]
+leaf = "platform!"
+symbol_stem = "platform"
+[[hosted]]
+leaf = "cwd!"
+symbol_stem = "cwd"
+[[hosted]]
+leaf = "exe_path!"
+symbol_stem = "exe_path"
+[[hosted]]
+leaf = "temp_dir!"
+symbol_stem = "temp_dir"

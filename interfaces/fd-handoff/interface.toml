@@ -1,0 +1,12 @@
+# The fd behind a sync-io stream, for another package's host (trantor-process's
+# spawn). Wired but not exported: apps cannot import it (D-S2-14, D-S2-21).
+module = "FdHandoff"
+[[hosted]]
+leaf = "output_fd!"
+symbol_stem = "output_fd"
+[[hosted]]
+leaf = "input_fd!"
+symbol_stem = "input_fd"
+[[hosted]]
+leaf = "close_fd!"
+symbol_stem = "close_fd"

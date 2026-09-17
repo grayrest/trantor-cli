@@ -1,0 +1,196 @@
+# trantor-cli — a CLI platform package for trantor.
+#
+# This file is the definitive description of the package. It used to be
+# generated from a world.toml inside the trantor repo, which had the
+# relationship backwards: that world is a consumer of this package now, like
+# any other.
+#
+# Two surfaces, both exposed (see README.md):
+#   - the WASI-derived capability layer (6): Cli, Clocks, Fs, IOErr, OsStr, Streams
+#     `Cli` is a facade over four interfaces (cli-env/-exit/-stdin/-stdout). They stay five
+#     so wiring stays per-capability — a world can still decline cli-exit alone — while an app
+#     sees one door. `cwd` and `random` are wired but unexposed: the first is plumbing, the
+#     second is `Random` with one fewer way in.
+#   - the basic-cli shim over it (11): Env, File, Locale, Path, Random, Sleep, Stderr, Stdin, Stdout, Url, Utc
+#     (Subprocess/Cmd -> a `trantor-process` package; a baseline that can start a
+#     process cannot be confined, since a child is outside the fs policy)
+#     (Tty/raw mode -> a `trantor-terminal` package; termios is terminal state, not a CLI primitive)
+#     `OsStr` moved DOWN into the hosted layer: the host boundary speaks it, so a shim
+#     component cannot own it. It is the same type an app annotates `main!` with.
+#     (Temporal -> trantor-temporal; Sockets/HttpHost/Tcp/Udp/Http/TempTest -> trantor-net)
+
+[package]
+name = "trantor-cli"
+version = "0.1.0"
+provides_driver = "main-driver"
+
+# Everything an app may import. The shim first, then the raw layer; the two do
+# not collide, which is why the hosted modules carry `Host`/`Cli` names.
+exports = [
+	"Cli",
+	"Clocks",
+	"Env",
+	"File",
+	"Fs",
+	"IOErr",
+	"Locale",
+	"OsStr",
+	"Path",
+	"Random",
+	"Sleep",
+	"Stderr",
+	"Stdin",
+	"Stdout",
+	"Streams",
+	"Url",
+	"Utc",
+]
+
+# The interfaces this package ships (interfaces/<name>/).
+[interfaces.io]
+[interfaces.os-str]
+[interfaces.sync-io]
+[interfaces.cli-stdout]
+[interfaces.cli-stdin]
+[interfaces.cli-exit]
+[interfaces.cli-env]
+[interfaces.fs]
+[interfaces.cwd]
+[interfaces.clocks]
+[interfaces.random]
+[interfaces.fd-handoff]
+
+# Its components. `fs-confined` is declared but NOT wired: a consumer that
+# wants the confined filesystem writes `fs = "fs-confined"` under [wiring]
+# and that beats the default below (D-U1-1).
+[components.main-driver]
+kind = "driver"
+lang = "rust"
+provides_runtime = true
+# Mirrors components/main-driver/driver.toml, which is the authoritative copy
+# (manifest.rs reads that one).
+requires_uses = ["Native"]
+
+[components.sync-io]
+kind = "host"
+lang = "rust"
+exports = [
+	"sync-io",
+	"fd-handoff",
+]
+
+[components.cli-host]
+kind = "host"
+lang = "rust"
+imports = [
+	"sync-io",
+]
+exports = [
+	"cli-stdout",
+	"cli-stdin",
+	"cli-env",
+	"cli-exit",
+]
+
+[components.cwd-host]
+kind = "host"
+lang = "rust"
+exports = [
+	"cwd",
+]
+
+[components.fs-unconfined]
+kind = "host"
+lang = "rust"
+imports = [
+	"sync-io",
+]
+exports = [
+	"fs",
+]
+
+[components.clocks-host]
+kind = "host"
+lang = "rust"
+exports = [
+	"clocks",
+]
+
+[components.random-host]
+kind = "host"
+lang = "rust"
+exports = [
+	"random",
+]
+
+[components.cli]
+kind = "roc"
+exports = [
+	"Cli",
+]
+
+[components.host-shim]
+kind = "roc"
+exports = [
+	"Host",
+]
+
+[components.basic-cli-lib]
+kind = "roc"
+exports = [
+	"Path",
+	"File",
+	"Env",
+]
+
+[components.basic-lib]
+kind = "roc"
+exports = [
+	"Utc",
+	"Sleep",
+	"Random",
+	"Locale",
+	"Url",
+	"InternalDateTime",
+]
+
+[components.fs-ops]
+kind = "roc"
+imports = [
+	"fs",
+	"cwd",
+]
+exports = [
+	"FsOps",
+]
+
+[components.stdio-lib]
+kind = "roc"
+exports = [
+	"Stdout",
+	"Stderr",
+	"Stdin",
+]
+
+[components.fs-confined]
+kind = "host"
+lang = "rust"
+imports = [
+	"sync-io",
+]
+exports = [
+	"fs",
+]
+
+# The default wiring. Every line here is overridable by name.
+[provides]
+sync-io = "sync-io"
+fd-handoff = "sync-io"
+cli-stdout = "cli-host"
+cli-stdin = "cli-host"
+cli-env = "cli-host"
+cli-exit = "cli-host"
+cwd = "cwd-host"
+fs = "fs-unconfined"
+clocks = "clocks-host"
+random = "random-host"

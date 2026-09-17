@@ -1,0 +1,31 @@
+provides_symbol = "roc_main"
+provided_fn = "main_for_host!"
+# `requires` below names `OsStr` (the argv element type), so resolve.rs must
+# demand the world export it — an app cannot be handed a type it cannot name.
+# This list used to name Stdout/Stderr/Stdin/Env, which `requires` did NOT
+# reference, so a world wanting only the roc:cli surface was refused for an H1b
+# hazard that did not apply. IOErr still arrives through imports_extra alone,
+# because `requires` spells it bare rather than qualifying a module.
+requires_uses = ["OsStr"]
+imports_extra = ["IOErr", "CliEnv", "OsStr"]
+requires = """
+		main! : List(OsStr) => Try({}, [Io(IOErr), ..])
+"""
+provided = """
+## Exit is an effect now (roc:cli/exit), so the app's error type no longer has
+## to carry a variant about process lifetime. An app that wants a specific
+## status calls `CliExit.exit!`; one that just fails returns `Err` and gets 1,
+## which is what a CLI does.
+##
+## argv is handed over as it arrives. It used to be re-tagged element by
+## element because the hosted leaf returned `List(Str)` and `main!` wanted a
+## union; both are `List(OsStr)` now, the same nominal the app annotates, so
+## there is nothing to convert and a non-UTF-8 argument keeps its bytes.
+main_for_host! : () => I32
+main_for_host! = || {
+	match main!(CliEnv.args!({})) {
+		Ok({}) => 0
+		Err(_) => 1
+	}
+}
+"""

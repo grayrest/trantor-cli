@@ -1,0 +1,7 @@
+module = "Cwd"
+[[hosted]]
+leaf = "get!"
+symbol_stem = "get"
+[[hosted]]
+leaf = "set!"
+symbol_stem = "set"

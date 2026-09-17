@@ -1,0 +1,68 @@
+# roc:filesystem/types + preopens. Descriptor is a resource (P5). Paths cross
+# as raw bytes (P11); a directory listing is each entry's name and kind.
+module = "Fs"
+[[resources]]
+name = "Descriptor"
+[[hosted]]
+leaf = "preopens!"
+symbol_stem = "preopens"
+[[hosted]]
+leaf = "open_with_flags_at!"
+symbol_stem = "open_with_flags_at"
+[[hosted]]
+leaf = "read_via_stream!"
+symbol_stem = "read_via_stream"
+[[hosted]]
+leaf = "write_via_stream!"
+symbol_stem = "write_via_stream"
+[[hosted]]
+leaf = "append_via_stream!"
+symbol_stem = "append_via_stream"
+[[hosted]]
+leaf = "read_file_at!"
+symbol_stem = "read_file_at"
+[[hosted]]
+leaf = "write_file_at!"
+symbol_stem = "write_file_at"
+[[hosted]]
+leaf = "stat_at!"
+symbol_stem = "stat_at"
+[[hosted]]
+leaf = "read_dir_at!"
+symbol_stem = "read_dir_at"
+[[hosted]]
+leaf = "create_dir_at!"
+symbol_stem = "create_dir_at"
+[[hosted]]
+leaf = "create_dir_all_at!"
+symbol_stem = "create_dir_all_at"
+[[hosted]]
+leaf = "remove_dir_at!"
+symbol_stem = "remove_dir_at"
+[[hosted]]
+leaf = "remove_dir_all_at!"
+symbol_stem = "remove_dir_all_at"
+[[hosted]]
+leaf = "unlink_at!"
+symbol_stem = "unlink_at"
+[[hosted]]
+leaf = "rename_at!"
+symbol_stem = "rename_at"
+[[hosted]]
+leaf = "link_at!"
+symbol_stem = "link_at"
+[[hosted]]
+leaf = "copy_file_at!"
+symbol_stem = "copy_file_at"
+[[hosted]]
+leaf = "copy_dir_at!"
+symbol_stem = "copy_dir_at"
+[[hosted]]
+leaf = "readlink_at!"
+symbol_stem = "readlink_at"
+[[hosted]]
+leaf = "symlink_at!"
+symbol_stem = "symlink_at"
+[[hosted]]
+leaf = "metadata_hash_at!"
+symbol_stem = "metadata_hash_at"
