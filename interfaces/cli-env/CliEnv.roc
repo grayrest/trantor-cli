@@ -1,7 +1,6 @@
 import IOErr exposing [IOErr]
 import OsStr exposing [OsStr]
 ## roc:cli/environment primitives, shaped after wasi:cli/environment.
-## Str-based per P11 (no OsStr).
 ##
 ## Lists cross whole. They used to arrive as count+at pairs because the glue of
 ## the day could not build a `RocList<RocStr>` host-side (R-B5); measured again
@@ -33,8 +32,13 @@ CliEnv :: [].{
 	## value, which aborted `Env.dict!()` — the one function whose doc promises
 	## "native non-Unicode values are preserved".
 	env! : {} => List({ name : OsStr, value : OsStr })
-	cwd! : {} => Str
-	exe_path! : {} => Str
-	temp_dir! : {} => Str
+	## `OsStr` and a failure, for the same reason as `var!`. These were `Str`,
+	## built lossily, and `""` when the OS call failed: a non-UTF-8 directory
+	## came back with U+FFFD where its bytes were, and a deleted cwd came back
+	## as `""`, which a caller joining paths onto it turned into the root.
+	cwd! : {} => Try(OsStr, [Io(IOErr)])
+	exe_path! : {} => Try(OsStr, [Io(IOErr)])
+	## No failure: it reads `TMPDIR`, falling back to the platform default.
+	temp_dir! : {} => OsStr
 	platform! : {} => { arch : [X86, X64, ARM, AARCH64, OTHER(Str)], os : [LINUX, MACOS, WINDOWS, OTHER(Str)] }
 }

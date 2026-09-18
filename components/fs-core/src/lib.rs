@@ -91,8 +91,13 @@ fn relative_to_root(base: &Path, cand: &Path) -> std::io::Result<PathBuf> {
         Ok(r) => r.to_path_buf(),
         Err(_) => {
             // The same directory under another spelling (/tmp vs /private/tmp).
+            // Canonicalizing only the base missed the other direction: a root
+            // at /private/tmp/x refused `/tmp/x/f`, which names a file inside.
             let cb = base.canonicalize()?;
-            cand.strip_prefix(&cb).map(|r| r.to_path_buf()).map_err(|_| outside())?
+            match cand.strip_prefix(&cb) {
+                Ok(r) => r.to_path_buf(),
+                Err(_) => ancestor_resolved(cand).as_deref().and_then(|p| p.strip_prefix(&cb).ok()).map(Path::to_path_buf).ok_or_else(outside)?,
+            }
         }
     };
     let rel = if rel.as_os_str().is_empty() { PathBuf::from(".") } else { rel };
@@ -104,6 +109,25 @@ fn relative_to_root(base: &Path, cand: &Path) -> std::io::Result<PathBuf> {
     let mut spelled = rel.into_os_string();
     spelled.push(trailing_spelling(cand.as_os_str().as_bytes()));
     Ok(PathBuf::from(spelled))
+}
+
+/// `cand` with its deepest existing PROPER ancestor canonicalized and the rest
+/// reattached as spelled, or `None` if no ancestor resolves.
+///
+/// The last component is never resolved: the operation may create it, and a
+/// symlink there must stay the link (canonicalizing it made `delete!` act on
+/// the target). What follows the ancestor is not resolved either, `..`
+/// included: it goes to cap-std as spelled, which walks it from the root handle
+/// and refuses it if it leaves. Resolving it lexically here could turn a path
+/// that climbs out through a link into one that looks inside.
+fn ancestor_resolved(cand: &Path) -> Option<PathBuf> {
+    let parts: Vec<std::path::Component> = cand.components().collect();
+    (1..parts.len()).rev().find_map(|k| {
+        let ancestor: PathBuf = parts[..k].iter().collect();
+        let mut resolved = ancestor.canonicalize().ok()?;
+        resolved.extend(&parts[k..]);
+        Some(resolved)
+    })
 }
 
 /// The tail components rebuilding drops: `/.` if the path ends in a `.`
@@ -184,7 +208,16 @@ impl<'a> Target<'a> {
 
 /// Resolve `rel` (raw bytes) against a directory descriptor under the root
 /// policy.
+///
+/// An empty path names nothing. `dir.join("")` is `dir` itself, so an empty
+/// path used to act on the directory: `Path.delete_all!(Path.utf8(""))` removed
+/// the working directory (confined: emptied the root), and `read_dir_at!(root,
+/// [])` listed `/`. The kernel answers ENOENT for "", and so does this, on
+/// both backends and for every operation.
 pub fn resolve<'a>(root: &'a Root, dir: &Path, rel: &[u8]) -> std::io::Result<Target<'a>> {
+    if rel.is_empty() {
+        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "an empty path names nothing"));
+    }
     let p = Path::new(std::ffi::OsStr::from_bytes(rel));
     let cand = if p.is_absolute() { p.to_path_buf() } else { dir.join(p) };
     match &root.beneath {
@@ -633,7 +666,31 @@ pub mod ops {
         }))
     }
     pub fn remove_dir_at(r: &Root, d: *mut u64, p: RocListWith<u8, false>) -> FsCreateDirAtResult { dir_unit(with_path(r, d, p, |tg| { let tg = existing_directory_name(tg)?; both!(tg, remove_dir) })) }
-    pub fn remove_dir_all_at(r: &Root, d: *mut u64, p: RocListWith<u8, false>) -> FsCreateDirAtResult { dir_unit(with_path(r, d, p, |tg| { let tg = existing_directory_name(tg)?; both!(tg, remove_dir_all) })) }
+    pub fn remove_dir_all_at(r: &Root, d: *mut u64, p: RocListWith<u8, false>) -> FsCreateDirAtResult {
+        dir_unit(with_path(r, d, p, |tg| {
+            refuse_trailing_dot(&tg)?;
+            let tg = existing_directory_name(tg)?;
+            both!(tg, remove_dir_all)
+        }))
+    }
+
+    /// A recursive removal of a name ending in `.` (`adir/.`, `./adir/./`, the
+    /// cwd as `.`) emptied the directory and only then failed, when the final
+    /// `rmdir` answered EINVAL for the `.` — through `dirlink/.` it emptied the
+    /// directory the link leads to. The name cannot be removed, so refuse it
+    /// before deleting anything, as `ends_in_parent` does for `..`. A bare `.`
+    /// is the root named plainly beneath it, which stays removable by name.
+    /// `remove_dir_at` needs none of this: its single `rmdir` refuses first.
+    fn refuse_trailing_dot(tg: &Target) -> std::io::Result<()> {
+        let mut b = tg.path().as_os_str().as_bytes();
+        while let Some(rest) = b.strip_suffix(b"/") {
+            b = rest;
+        }
+        if b.ends_with(b"/.") {
+            return Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "a directory named through . cannot be removed"));
+        }
+        Ok(())
+    }
 
     /// A directory that must not exist yet, then its own error where the name
     /// says one thing and the kernel another.

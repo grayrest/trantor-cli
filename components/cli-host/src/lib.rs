@@ -235,6 +235,14 @@ pub extern "C-unwind" fn trantor__cli_host__env() -> RocList<AnonStruct57d79b2a5
 pub extern "C-unwind" fn trantor__cli_host__var(name: OsStr) -> CliEnvVarResult {
     let key = os_string(&name);
     unsafe { name.decref(abi::host()) }; // owned arg (B0 rule)
+    if let Err(e) = valid_env_key(&key) {
+        return CliEnvVarResult {
+            payload: CliEnvVarResultPayload { err: ManuallyDrop::new(IoOrVarNotFound {
+                payload: IoOrVarNotFoundPayload { io: ManuallyDrop::new(var_ioerr(&e)) },
+                tag: IoOrVarNotFoundTag::Io }) },
+            tag: CliEnvVarResultTag::Err,
+        };
+    }
     match std::env::var_os(&key) {
         Some(v) => CliEnvVarResult { payload: CliEnvVarResultPayload { ok: ManuallyDrop::new(native(&v)) }, tag: CliEnvVarResultTag::Ok },
         None => CliEnvVarResult {
@@ -244,6 +252,19 @@ pub extern "C-unwind" fn trantor__cli_host__var(name: OsStr) -> CliEnvVarResult 
             tag: CliEnvVarResultTag::Err,
         },
     }
+}
+
+/// A name the environment can hold. An entry is `name=value`, so a name
+/// holding `=` matched a different entry (`A=B` read variable `A`'s value when
+/// it began `B`), and a NUL ends the name early. The check and its wording are
+/// basic-cli 0.21's `validate_env_key`, so the shim's `Env.var!` answers what
+/// basic-cli's does: `EnvErr(Other(..))`.
+fn valid_env_key(key: &std::ffi::OsStr) -> std::io::Result<()> {
+    let bytes = key.as_encoded_bytes();
+    if bytes.is_empty() || bytes.contains(&0) || bytes.contains(&b'=') {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "environment variable names cannot be empty or contain nul bytes or '='"));
+    }
+    Ok(())
 }
 
 #[unsafe(no_mangle)]
@@ -265,14 +286,45 @@ pub extern "C-unwind" fn trantor__cli_host__platform() -> AnonStructBca0d23b5d62
 }
 
 
-// ---- B3 additions: process cwd / exe path / temp dir as Str (P11) ----
-fn s(p: std::path::PathBuf) -> RocStr { RocStr::from_str(&p.to_string_lossy(), abi::host()) }
+// ---- process cwd / exe path / temp dir, as OsStr ----
+//
+// These were `Str`: `to_string_lossy`, and `""` when the OS call failed. A
+// non-UTF-8 directory lost its bytes, and a deleted cwd read as `""`, which
+// the path layer joined relative paths onto.
+
+/// An `IOErr` for this crate's env leaves. Glue emits one twin per reach path
+/// (`var!`'s is `CliEnvIOErr`); both are the same 10 variants.
+macro_rules! ioerr_ctor {
+    ($name:ident, $ty:ident, $pl:ident, $tag:ident) => {
+        fn $name(e: &std::io::Error) -> $ty {
+            let tag = sync_io_core::ioerr_tag!(e, $tag);
+            if let $tag::Other = tag {
+                $ty { payload: $pl { other: ManuallyDrop::new(RocStr::from_str(&e.to_string(), abi::host())) }, tag }
+            } else {
+                $ty { payload: unsafe { core::mem::zeroed() }, tag }
+            }
+        }
+    };
+}
+ioerr_ctor!(env_ioerr, IOErr, IOErrPayload, IOErrTag);
+ioerr_ctor!(var_ioerr, CliEnvIOErr, CliEnvIOErrPayload, CliEnvIOErrTag);
+
+fn path_result(r: std::io::Result<std::path::PathBuf>) -> CliEnvCwdResult {
+    match r {
+        Ok(p) => CliEnvCwdResult { payload: CliEnvCwdResultPayload { ok: ManuallyDrop::new(native(p.as_os_str())) }, tag: CliEnvCwdResultTag::Ok },
+        Err(e) => CliEnvCwdResult { payload: CliEnvCwdResultPayload { err: ManuallyDrop::new(env_ioerr(&e)) }, tag: CliEnvCwdResultTag::Err },
+    }
+}
+
+/// `CliEnv.cwd! : {} => Try(OsStr, [Io(IOErr)])`
 #[unsafe(no_mangle)]
-pub extern "C-unwind" fn trantor__cli_host__cwd() -> RocStr { s(std::env::current_dir().unwrap_or_default()) }
+pub extern "C-unwind" fn trantor__cli_host__cwd() -> CliEnvCwdResult { path_result(std::env::current_dir()) }
+/// `CliEnv.exe_path! : {} => Try(OsStr, [Io(IOErr)])`
 #[unsafe(no_mangle)]
-pub extern "C-unwind" fn trantor__cli_host__exe_path() -> RocStr { s(std::env::current_exe().unwrap_or_default()) }
+pub extern "C-unwind" fn trantor__cli_host__exe_path() -> CliEnvCwdResult { path_result(std::env::current_exe()) }
+/// `CliEnv.temp_dir! : {} => OsStr`
 #[unsafe(no_mangle)]
-pub extern "C-unwind" fn trantor__cli_host__temp_dir() -> RocStr { s(std::env::temp_dir()) }
+pub extern "C-unwind" fn trantor__cli_host__temp_dir() -> OsStr { native(std::env::temp_dir().as_os_str()) }
 
 /// `CliExit.exit! : I32 => {}` — does not return.
 #[unsafe(no_mangle)]

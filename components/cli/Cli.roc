@@ -37,16 +37,18 @@ Cli :: [].{
 	env! : {} => List({ name : OsStr, value : OsStr })
 	env! = |{}| CliEnv.env!({})
 
-	## The process working directory.
-	cwd! : {} => Str
+	## The process working directory, with its bytes as the OS has them.
+	## `Err(Io(_))` when it cannot be read, as when it has been deleted.
+	cwd! : {} => Try(OsStr, [Io(IOErr)])
 	cwd! = |{}| CliEnv.cwd!({})
 
-	## The path to the running executable.
-	exe_path! : {} => Str
+	## The path to the running executable, with its bytes as the OS has them.
+	exe_path! : {} => Try(OsStr, [Io(IOErr)])
 	exe_path! = |{}| CliEnv.exe_path!({})
 
-	## The system directory for temporary files.
-	temp_dir! : {} => Str
+	## The system directory for temporary files: `TMPDIR`, or the platform's
+	## default when it is unset.
+	temp_dir! : {} => OsStr
 	temp_dir! = |{}| CliEnv.temp_dir!({})
 
 	## The architecture and OS the host was built for.

@@ -66,9 +66,9 @@ main! = |_args| {
 Cli.args! : {} => List(OsStr)                                   # argv[0] first; an app uses main!'s argument
 Cli.var! : OsStr => Try(OsStr, [VarNotFound(OsStr), Io(IOErr)])
 Cli.env! : {} => List({ name : OsStr, value : OsStr })
-Cli.cwd! : {} => Str
-Cli.exe_path! : {} => Str
-Cli.temp_dir! : {} => Str
+Cli.cwd! : {} => Try(OsStr, [Io(IOErr)])                        # the OS's bytes; Io when it is gone
+Cli.exe_path! : {} => Try(OsStr, [Io(IOErr)])
+Cli.temp_dir! : {} => OsStr                                     # TMPDIR, or the platform default
 Cli.platform! : {} => { arch : [X86, X64, ARM, AARCH64, OTHER(Str)], os : [LINUX, MACOS, WINDOWS, OTHER(Str)] }
 
 # exit
@@ -425,7 +425,7 @@ ParseErr : [Empty, EmptySubtag, InvalidCharacter, InvalidLanguage, MissingExtens
 parse : Str -> Try(Locale, ParseErr)                      # a BCP 47 tag, "en-US"
 from_quote : Str -> Try(Locale, [BadQuotedBytes(Str)])
 get! : () => Try(Locale, [NotAvailable, ..])              # the first of all!
-all! : () => List(Locale)                                 # from LANGUAGE, LC_ALL and LANG; unparseable ones dropped
+all! : () => List(Locale)                                 # LANGUAGE, then the first of LC_ALL/LC_MESSAGES/LANG; none under C/POSIX
 
 # rendering and comparing
 to_str : Locale -> Str                                    # the original spelling
@@ -471,8 +471,8 @@ fragment : Url -> [None, Some(Str)]
 query_pairs : Url -> List((Str, Str))                     # form-decoded, in order, duplicates kept
 
 # changing
-resolve : Url, Str -> Try(Url, ParseErr)                  # a relative reference or absolute URL
-append_path_segments : Url, List(Str) -> Url              # a "/" inside an item is encoded
+resolve : Url, Str -> Try(Url, ParseErr)                  # a relative reference or absolute http(s) URL; other schemes refused
+append_path_segments : Url, List(Str) -> Url              # a "/" inside an item is encoded, and a "." or ".." item
 append_query_param : Url, Str, Str -> Url                 # name, value
 with_query : Url, [None, Some(Str)] -> Try(Url, ParseErr)
 with_fragment : Url, [None, Some(Str)] -> Try(Url, ParseErr)

@@ -41,6 +41,7 @@ fixture() {
 	echo shut > "$1/shutfile"; chmod 000 "$1/shutfile"; ln -s shutfile "$1/shutlink"
 	echo ro > "$1/rofile"; chmod 444 "$1/rofile"; ln -s rofile "$1/rolink"
 	ln -s missing "$1/dangling"; ln -s keep.txt "$1/noexec-link"; ln -s setuid.sh "$1/setuid-link"
+	mkdir -p "$1/dottree/d" "$1/dotlinktarget/d" "$1/dotempty"; echo t > "$1/dottree/d/f"; echo t > "$1/dotlinktarget/d/f"; ln -s dotlinktarget "$1/dotlink"
 }
 new_project
 build_app app.roc plain
@@ -69,15 +70,27 @@ for d in p c; do
 		[[ "$(mode "$TMP/$d/${pair%%:*}")" == "${pair#*:}" ]] || { echo "FAIL: $d: ${pair%%:*} has mode $(mode "$TMP/$d/${pair%%:*}"), want ${pair#*:}"; exit 1; }
 	done
 	[[ -d "$TMP/$d/q2" && ! -e "$TMP/$d/radir" && -L "$TMP/$d/sub/q" ]] || { echo "FAIL: $d: renaming sub/q/ should move the directory it links to, not the link"; exit 1; }
+	[[ -f "$TMP/$d/keep.txt" && -f "$TMP/$d/adir/inner" ]] || { echo "FAIL: $d: an empty path or a bare . removed the working directory's contents"; exit 1; }
+	[[ -f "$TMP/$d/dottree/d/f" && -f "$TMP/$d/dotlinktarget/d/f" && -L "$TMP/$d/dotlink" && -d "$TMP/$d/dotempty" ]] || { echo "FAIL: $d: removing a name ending in . deleted something"; exit 1; }
 done
 grep -q '^write-slash err:NotADirectory$' <<<"$plain" || { echo "FAIL: writing out/ should be NotADirectory: $(grep write-slash <<<"$plain")"; exit 1; }
 grep -q '^copy-missing err:NotFound$' <<<"$plain" || { echo "FAIL: a missing source onto an existing file should report NotFound: $(grep copy-missing <<<"$plain")"; exit 1; }
 for op in write-dot truncate-dot write-new-dot unlink-link-dot symlink-dot copy-dot open-create-slash; do
 	grep -q "^$op err:NotADirectory$" <<<"$plain" || { echo "FAIL: $op should be NotADirectory: $(grep "^$op " <<<"$plain")"; exit 1; }
 done
+for want in "read-empty err:NotFound" "write-empty err:NotFound" "list-empty err:NotFound" "type-empty err:NotFound" "raw-list-empty err:NotFound" "raw-stat-empty err:NotFound" "raw-open-dir-empty err:NotFound" "delete-all-empty err:NotFound" "delete-all-trailing-dot err:Unsupported" "delete-all-dot-slash err:Unsupported" "delete-all-link-dot err:Unsupported" "delete-all-bare-dot err:Unsupported"; do
+	grep -qx "$want" <<<"$plain" || { echo "FAIL: want '$want', got '$(grep "^${want%% *} " <<<"$plain")'"; exit 1; }
+done
 for want in "delete-all-dotdot err:Unsupported" "delete-empty-dotdot err:Unsupported" "symlink-dotdot err:AlreadyExists" "write-dotdot err:AlreadyExists" "symlink-missing-dotdot err:NotFound" "size-file 10" "size-link 10" "readable-link False" "writable-link False" "mkdir-all-existing-slash ok" "mkdir-all-dirlink-slash ok" "mkdir-all-deep-again ok" "mkdir-all-dangling-slash err:AlreadyExists" "mkdir-all-filelink-slash err:AlreadyExists" "mkdir-all-file-slash err:AlreadyExists" "rename-unreadable-slash err:PermissionDenied" "rename-missing-slash err:NotFound" "read-dir-stream err:IsADirectory" "delete-empty-slash ok" "delete-all-slash ok" "delete-empty-link-slash err:NotADirectory" "delete-all-link-slash err:NotADirectory" "mkdir-dangling-slash err:AlreadyExists" "copy-dir-link-slash ok" "copy-dir-onto-dangling-slash err:AlreadyExists" "copy-dir-onto-filelink-slash err:AlreadyExists" "copy-dir-new-slash ok" "open-create-dir-slash err:IsADirectory" "copy-dir-link err:NotADirectory" "copy-dir-file err:NotADirectory" "copy-dir-exists err:AlreadyExists" "exec-dangling err:NotFound" "exec-link-noexec False" "exec-link-exec True"; do
 	grep -qx "$want" <<<"$plain" || { echo "FAIL: want '$want', got '$(grep "^${want%% *} " <<<"$plain")'"; exit 1; }
 done
 grep -q '^type-dirlink-slash IsDir$' <<<"$plain" || { echo "FAIL: dirlink/ should follow the link: $(grep type-dirlink-slash <<<"$plain")"; exit 1; }
 grep -q '^file-base err:NotADirectory$' <<<"$plain" || { echo "FAIL: a file descriptor as a base should be NotADirectory: $(grep file-base <<<"$plain")"; exit 1; }
-echo "ok: the default and confined filesystems agree on trailing slashes, copies and descriptor bases, $(wc -l <<<"$plain" | tr -d ' ') operations"
+# The confined root spelled through a link to its parent (/tmp for
+# /private/tmp) is inside it; beside it, through the same link, is not.
+ln -s "$TMP" "$TMP/up"
+aliased=$(cd "$TMP/c" && capped 60 "$(bin confined)" "$TMP/up/c" "$TMP/up/p/keep.txt") || { echo "FAIL: the confined app did not finish the alias run"; exit 1; }
+want_alias=$'alias-read ok\nalias-write ok\nalias-missing err:NotFound\nalias-escape err:PermissionDenied\nalias-outside err:PermissionDenied'
+[[ "$aliased" == "$want_alias" ]] || { echo "FAIL: the confined root through an alias answered:"; echo "$aliased"; echo "want:"; echo "$want_alias"; exit 1; }
+[[ "$(cat "$TMP/c/alias-new.txt")" == new ]] || { echo "FAIL: a write through the alias did not land in the root"; exit 1; }
+echo "ok: the default and confined filesystems agree on trailing slashes, copies, descriptor bases, empty paths and trailing dots, $(wc -l <<<"$plain" | tr -d ' ') operations; the confined root answers to an aliased spelling"

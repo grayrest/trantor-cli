@@ -7,7 +7,7 @@ provided_fn = "main_for_host!"
 # hazard that did not apply. IOErr still arrives through imports_extra alone,
 # because `requires` spells it bare rather than qualifying a module.
 requires_uses = ["OsStr"]
-imports_extra = ["IOErr", "CliEnv", "OsStr"]
+imports_extra = ["IOErr", "CliEnv", "OsStr", "CliOut", "Streams"]
 requires = """
 		main! : List(OsStr) => Try({}, [Io(IOErr), ..])
 """
@@ -15,7 +15,10 @@ provided = """
 ## Exit is an effect now (roc:cli/exit), so the app's error type no longer has
 ## to carry a variant about process lifetime. An app that wants a specific
 ## status calls `CliExit.exit!`; one that just fails returns `Err` and gets 1,
-## which is what a CLI does.
+## which is what a CLI does. The error is written to stderr first, in basic-cli
+## 0.21's words: it used to be dropped, so an app that failed on an unexpected
+## error exited 1 with nothing said about why. A failed write is ignored, as
+## basic-cli ignores it; the status is still 1.
 ##
 ## argv is handed over as it arrives. It used to be re-tagged element by
 ## element because the hosted leaf returned `List(Str)` and `main!` wanted a
@@ -25,7 +28,10 @@ main_for_host! : () => I32
 main_for_host! = || {
 	match main!(CliEnv.args!({})) {
 		Ok({}) => 0
-		Err(_) => 1
+		Err(other) => {
+			_ = Streams.write!(CliOut.get_stderr!({}), Str.to_utf8("Program exited with error: ${Str.inspect(other)}\\n"))
+			1
+		}
 	}
 }
 """

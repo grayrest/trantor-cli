@@ -87,7 +87,7 @@ Locale :: { raw : Str }.{
 	## Returns the most preferred locale for the system or application.
 	##
 	## Returns `Err(NotAvailable)` when no environment variable names a locale
-	## this module can parse.
+	## this module can parse, or when the locale in effect is C or POSIX.
 	get! : () => Try(Locale, [NotAvailable, ..])
 	get! = || match List.first(all!()) {
 		Ok(locale) => Ok(locale)
@@ -96,8 +96,11 @@ Locale :: { raw : Str }.{
 
 	## Returns the preferred locales for the system or application.
 	##
-	## These come from LANGUAGE / LC_ALL / LANG, which are external input a user
-	## sets, so each one is parsed here and an unparseable one is dropped. The
+	## These come from LANGUAGE, then the first of LC_ALL / LC_MESSAGES / LANG
+	## that is set (POSIX precedence; under C or POSIX there are none, LANGUAGE
+	## included), without repeats that differ only in case. They are external
+	## input a user sets, so each one is parsed here and an unparseable one is
+	## dropped. The
 	## doc this replaces said host locale strings were trusted "because the
 	## platform host is responsible for returning BCP 47 language tags" — but
 	## the host only stripped the `.charset` suffix and swapped `_` for `-`;

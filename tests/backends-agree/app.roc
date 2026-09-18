@@ -65,8 +65,31 @@ here! = || Str.to_utf8(Path.display(Env.cwd!() ?? Path.utf8(".")))
 root! : () => Fs.Descriptor
 root! = || Fs.preopens!({}).first() ?? crash("no preopen")
 
+## With two arguments, the root spelled through a link to one of its
+## ancestors instead (see `alias!`).
 main! : List(OsStr) => Try({}, _)
-main! = |_args| {
+main! = |args| match (List.get(args, 1), List.get(args, 2)) {
+	(Ok(inside), Ok(outside)) => alias!(OsStr.display(inside), OsStr.display(outside))
+	_ => agree!()
+}
+
+## The root as `<link>/c`, where the link leads to the root's parent, as `/tmp`
+## leads to `/private`: confined, only the canonical spelling used to be
+## inside. `outside` is a file beside the root, through the same link.
+alias! : Str, Str => Try({}, _)
+alias! = |inside, outside| {
+	lines = [
+		"alias-read ${outcome(Path.read_utf8!(Path.utf8("${inside}/keep.txt")))}",
+		"alias-write ${outcome(Path.write_utf8!(Path.utf8("${inside}/alias-new.txt"), "new"))}",
+		"alias-missing ${outcome(Path.read_utf8!(Path.utf8("${inside}/nothing-here")))}",
+		"alias-escape ${outcome(Path.read_utf8!(Path.utf8("${inside}/../p/keep.txt")))}",
+		"alias-outside ${outcome(Path.read_utf8!(Path.utf8(outside)))}",
+	]
+	Stdout.line!(Str.join_with(lines, "\n"))
+}
+
+agree! : () => Try({}, _)
+agree! = || {
 	lines = [
 		# A trailing / on a path that is not a directory.
 		"write-slash ${outcome(Path.write_bytes!(Path.utf8("out/"), [1]))}",
@@ -159,6 +182,23 @@ main! = |_args| {
 			Ok(reader) => raw(Fs.read_file_at!(reader.descriptor(), Str.to_utf8("keep.txt")))
 			Err(_) => "open-failed"
 		}}",
+		# An empty path names nothing, through every layer: it named the cwd
+		# (shim) or the descriptor's directory (raw).
+		"read-empty ${outcome(Path.read_bytes!(Path.utf8("")))}",
+		"write-empty ${outcome(Path.write_bytes!(Path.utf8(""), [1]))}",
+		"list-empty ${outcome(Path.list!(Path.utf8("")))}",
+		"type-empty ${kind!("")}",
+		"raw-list-empty ${raw(Fs.read_dir_at!(root!(), []))}",
+		"raw-stat-empty ${raw(Fs.stat_at!(root!(), [], { follow_symlinks: True }))}",
+		"raw-open-dir-empty ${raw(Fs.open_at!(root!(), [], { directory: True }))}",
+		"delete-all-empty ${outcome(Path.delete_all!(Path.utf8("")))}",
+		# A recursive removal of a name ending in `.` is refused before it
+		# deletes anything; it emptied the directory, through a link too.
+		"delete-all-trailing-dot ${outcome(Path.delete_all!(Path.utf8("dottree/.")))}",
+		"delete-all-dot-slash ${outcome(Path.delete_all!(Path.utf8("./dottree/./")))}",
+		"delete-all-link-dot ${outcome(Path.delete_all!(Path.utf8("dotlink/.")))}",
+		"delete-empty-trailing-dot ${outcome(Path.delete_empty!(Path.utf8("dotempty/.")))}",
+		"delete-all-bare-dot ${outcome(Path.delete_all!(Path.utf8(".")))}",
 	]
 	Stdout.line!(Str.join_with(lines, "\n"))
 }

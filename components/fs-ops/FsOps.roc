@@ -1,4 +1,5 @@
 import IOErr exposing [IOErr]
+import OsStr exposing [OsStr]
 import Fs
 import Cwd
 import CliEnv
@@ -8,10 +9,21 @@ import Streams
 ## then run against preopen 0 -- basic-cli's ambient authority re-expressed as
 ## a capability the world granted (P4/P8).
 FsOps :: [].{
-	cwd! : {} => Str
+	## The working directory's bytes: the userland one when set, otherwise the
+	## process's, which is `CwdUnavailable` when the OS cannot say (a deleted
+	## directory). It was `""` then, and a relative path joined onto `""` was
+	## resolved against preopen 0, which is `/`.
+	cwd! : {} => Try(List(U8), [CwdUnavailable])
 	cwd! = |{}| {
 		c = Cwd.get!({})
-		if Str.is_empty(c) { CliEnv.cwd!({}) } else { c }
+		if Str.is_empty(c) {
+			match CliEnv.cwd!({}) {
+				Ok(os) => Ok(os_bytes(os))
+				Err(Io(_)) => Err(CwdUnavailable)
+			}
+		} else {
+			Ok(Str.to_utf8(c))
+		}
 	}
 	## Stores an ABSOLUTE path, and refuses one that is not a directory.
 	##
@@ -51,8 +63,21 @@ FsOps :: [].{
 		Err(_) => crash("roc:cli filesystem: the host published no preopened directory")
 	}
 
+	## An empty path stays empty, for the filesystem to answer `NotFound`:
+	## joined onto the cwd it named the cwd itself, and `Path.delete_all!` of
+	## `Path.utf8("")` removed the working directory. A relative path with no
+	## cwd to resolve against becomes empty too, so it is `NotFound` rather
+	## than a path under `/`.
 	resolve! : List(U8) => List(U8)
-	resolve! = |p| if is_absolute(p) { p } else { join_bytes(Str.to_utf8(cwd!({})), p) }
+	resolve! = |p|
+		if is_absolute(p) or List.is_empty(p) {
+			p
+		} else {
+			match cwd!({}) {
+				Ok(c) => join_bytes(c, p)
+				Err(CwdUnavailable) => []
+			}
+		}
 
 	read! : List(U8) => Try(List(U8), [FileErr(IOErr)])
 	read! = |p| as_file(Fs.read_file_at!(root!(), resolve!(p)))
@@ -184,6 +209,15 @@ writer_at! = |abs, mode| {
 			Ok({ descriptor, stream: Fs.append_via_stream!(descriptor)? })
 		}
 	}
+}
+
+## A native string's bytes. Only a Windows host yields UTF-16 units, and this
+## host joins bytes, so those are converted rather than refused.
+os_bytes : OsStr -> List(U8)
+os_bytes = |os| match OsStr.to_raw(os) {
+	Utf8(s) => Str.to_utf8(s)
+	UnixBytes(b) => b
+	WindowsU16s(_) => Str.to_utf8(OsStr.display(os))
 }
 
 is_absolute : List(U8) -> Bool

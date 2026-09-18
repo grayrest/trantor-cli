@@ -63,7 +63,8 @@ Host :: [].{
 	}
 
 	## The user's locales as BCP 47 tags, most preferred first: LANGUAGE
-	## (colon-separated), then LC_ALL, then LANG, de-duplicated.
+	## (colon-separated), then the effective locale, de-duplicated. See
+	## `locale_candidates` for which variables count and when.
 	##
 	## This was a Rust host component, `locale-host`, whose entire body was
 	## these three `std::env::var` calls and `locale_tag` below. It read no OS
@@ -72,9 +73,9 @@ Host :: [].{
 	## `CliEnv.var!` already grants. In Roc the normalisation is also testable,
 	## which it never was in the host.
 	locale_all! : () => List(Str)
-	locale_all! = || locale_tags(List.concat(
-		Str.split_on(env_or_empty!("LANGUAGE"), ":"),
-		[env_or_empty!("LC_ALL"), env_or_empty!("LANG")],
+	locale_all! = || locale_tags(locale_candidates(
+		env_or_empty!("LANGUAGE"),
+		[env_or_empty!("LC_ALL"), env_or_empty!("LC_MESSAGES"), env_or_empty!("LANG")],
 	))
 
 	# ---- basic-cli's file/dir/env seam (P15): its Path.roc/File.roc/Env.roc
@@ -146,15 +147,21 @@ Host :: [].{
 	## which no caller can tell from a real last line except by inspecting the
 	## final byte. A JSON-lines or CSV reader over such a file quietly got two
 	## corrupt records where there was one long one.
+	##
+	## One byte past the cap is read so a line of exactly `max_line` bytes is a
+	## line: capped at `max_line`, an unterminated last line that long filled
+	## the cap with no newline and was reported `LineTooLong` and lost. Only more
+	## than `max_line` bytes without a newline is too long; those bytes are
+	## consumed, and the next call reads on from there.
 	file_read_line! : FileReader => Try(List(U8), [FileErr(IOErr), LineTooLong])
 	file_read_line! = |r| {
-		bytes = Streams.read_until!(r.stream, 10, max_line).map_err(|Io(e)| FileErr(e))?
+		bytes = Streams.read_until!(r.stream, 10, max_line + 1).map_err(|Io(e)| FileErr(e))?
 		ended_with_newline =
 			match List.last(bytes) {
 				Ok(b) => b == 10
 				Err(_) => Bool.False
 			}
-		if List.len(bytes) >= max_line and !ended_with_newline { Err(LineTooLong) } else { Ok(bytes) }
+		if List.len(bytes) > max_line and !ended_with_newline { Err(LineTooLong) } else { Ok(bytes) }
 	}
 	file_append_bytes! : NativePath, List(U8) => Try({}, [FileErr(IOErr)])
 	file_append_bytes! = |p, bytes| FsOps.append!(file_bytes(p)?, bytes)
@@ -205,8 +212,11 @@ Host :: [].{
 	}
 	env_dict! : () => List((NativeOsStr, NativeOsStr))
 	env_dict! = || List.map(CliEnv.env!({}), |e| (e.name, e.value))
+	## The bytes as the OS has them, `UnixBytes` when they are not UTF-8, and
+	## the failure basic-cli documents. It was `Ok` of a lossy `Str`, or of `""`
+	## when the cwd was gone.
 	env_cwd! : () => Try(NativePath, [CwdUnavailable])
-	env_cwd! = || Ok(Utf8(FsOps.cwd!({})))
+	env_cwd! = || FsOps.cwd!({}).map_ok(bytes_native)
 	env_set_cwd! : NativePath => Try({}, IOErr)
 	env_set_cwd! = |p| match p {
 		Utf8(s) => FsOps.set_cwd!(s)
@@ -217,9 +227,9 @@ Host :: [].{
 		WindowsU16s(_) => Err(Other("windows paths are not supported on this host"))
 	}
 	env_exe_path! : () => Try(NativePath, [ExePathUnavailable])
-	env_exe_path! = || Ok(Utf8(CliEnv.exe_path!({})))
+	env_exe_path! = || CliEnv.exe_path!({}).map_err(|Io(_)| ExePathUnavailable)
 	env_temp_dir! : () => NativePath
-	env_temp_dir! = || Utf8(CliEnv.temp_dir!({}))
+	env_temp_dir! = || CliEnv.temp_dir!({})
 }
 
 out_write! : Streams.OutputStream, List(U8) => Try({}, [StdoutErr(IOErr)])
@@ -266,14 +276,45 @@ before = |s, sep| match List.first(Str.split_on(s, sep)) {
 	Err(_) => s
 }
 
+## The locale strings to consider, most preferred first, from LANGUAGE's
+## value and the values of LC_ALL, LC_MESSAGES and LANG, in that order.
+##
+## POSIX precedence: the effective locale is the FIRST of those three that is
+## set and non-empty, and the ones after it are not fallbacks. All three used
+## to be candidates, so `LC_ALL=C LANG=fr_FR.UTF-8` answered `fr-FR` where
+## every program on the system runs in C. When the effective locale is C or
+## POSIX (with or without a `.codeset`) there is no locale, and LANGUAGE is
+## ignored with it, as GNU gettext ignores it under C; `Locale.get!` answers
+## `NotAvailable` then, as basic-cli does on macOS.
+locale_candidates : Str, List(Str) -> List(Str)
+locale_candidates = |language, settings| {
+	effective = match List.first(List.keep_if(settings, |value| !Str.is_empty(value))) {
+		Ok(value) => value
+		Err(_) => ""
+	}
+	if is_c_locale(effective) { [] } else { List.append(Str.split_on(language, ":"), effective) }
+}
+
+is_c_locale : Str -> Bool
+is_c_locale = |raw| {
+	base = before(raw, ".")
+	base == "C" or base == "POSIX"
+}
+
 ## Candidate strings, most preferred first, reduced to the distinct tags among
 ## them. Pure, and separate from the env reads above, so it is testable.
+##
+## Distinct ignoring ASCII case, the first spelling kept: language tags are
+## case-insensitive, and `LANGUAGE=en_US:en_us` listed one locale twice.
 locale_tags : List(Str) -> List(Str)
 locale_tags = |candidates|
 	List.fold(candidates, [], |acc, raw| match locale_tag(raw) {
 		Err(NotALocale) => acc
-		Ok(tag) => if List.any(acc, |seen| seen == tag) { acc } else { List.append(acc, tag) }
+		Ok(tag) => if List.any(acc, |seen| ascii_lower(seen) == ascii_lower(tag)) { acc } else { List.append(acc, tag) }
 	})
+
+ascii_lower : Str -> Str
+ascii_lower = |s| Str.from_utf8_lossy(List.map(Str.to_utf8(s), |b| if b >= 'A' and b <= 'Z' { b + 32 } else { b }))
 
 expect locale_tags(["en_US.UTF-8"]) == ["en-US"]
 expect locale_tags(["fr_FR.UTF-8", "en_US.UTF-8"]) == ["fr-FR", "en-US"]
@@ -281,6 +322,21 @@ expect locale_tags(["de_DE", "fr_FR", "en_US.UTF-8"]) == ["de-DE", "fr-FR", "en-
 expect locale_tags(["en_US", "", "en_US.UTF-8"]) == ["en-US"]
 expect locale_tags(["", "C", "POSIX"]) == []
 expect locale_tags([]) == []
+expect locale_tags(["en_US", "en_us", "EN_us.UTF-8"]) == ["en-US"]
+expect locale_tags(["fr_FR", "en_US", "FR_fr"]) == ["fr-FR", "en-US"]
+
+# LC_ALL, LC_MESSAGES, LANG: the first one set decides; the rest are not fallbacks.
+expect locale_tags(locale_candidates("", ["C", "", "fr_FR.UTF-8"])) == []
+expect locale_tags(locale_candidates("", ["POSIX", "", "fr_FR.UTF-8"])) == []
+expect locale_tags(locale_candidates("", ["C.UTF-8", "", "fr_FR.UTF-8"])) == []
+expect locale_tags(locale_candidates("", ["it_IT", "de_DE", "fr_FR"])) == ["it-IT"]
+expect locale_tags(locale_candidates("", ["", "de_DE", "fr_FR"])) == ["de-DE"]
+expect locale_tags(locale_candidates("", ["", "", "fr_FR.UTF-8"])) == ["fr-FR"]
+# LANGUAGE leads, unless the effective locale is C.
+expect locale_tags(locale_candidates("en_US:en_us", ["", "", "fr_FR.UTF-8"])) == ["en-US", "fr-FR"]
+expect locale_tags(locale_candidates("de_DE:en_US", ["C", "", ""])) == []
+expect locale_tags(locale_candidates("de_DE", ["", "", ""])) == ["de-DE"]
+expect locale_tags(locale_candidates("", ["", "", ""])) == []
 
 expect locale_tag("en_US.UTF-8") == Ok("en-US")
 expect locale_tag("en_US") == Ok("en-US")
