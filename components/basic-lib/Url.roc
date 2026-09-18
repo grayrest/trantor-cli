@@ -4,6 +4,12 @@
 ## DNS names, dotted-decimal IPv4 addresses, or bracketed IPv6 addresses made
 ## from hexadecimal groups with optional :: elision. IPv4-in-IPv6 and Unicode
 ## domain names are intentionally unsupported.
+##
+## This is basic-cli 0.21's Url, and it diverges from it in three places, each
+## a case where basic-cli's answer let a URL mean something other than what it
+## says: `append_path_segments` encodes a `.` or `..` item, `resolve` rejects a
+## reference with a scheme other than http/https, and a host that another
+## parser would read as a number (octal, hex, a numeric last label) is refused.
 Url :: {
 	scheme : [Http, Https],
 	host : Str,
@@ -155,16 +161,29 @@ Url :: {
 	##
 	## Root-relative, path-relative, query-only, and fragment-only references
 	## are supported. Scheme-relative references are rejected.
+	##
+	## A reference that starts with a scheme (`name:`, RFC 3986 §3.1) is
+	## absolute (§4.2, §5.2.2). An http or https one is parsed as `parse` does,
+	## so `http:g`, which has no authority, is rejected as `parse` rejects it;
+	## any other (`mailto:`, `javascript:`, `ftp:`) is `UnsupportedScheme`.
+	## basic-cli 0.21 read `mailto:a` or `javascript:x` as a path and resolved
+	## it onto the base. A relative path whose first segment holds a colon is
+	## written `./a:b`, as the RFC requires, and resolves as a path.
 	resolve : Url, Str -> Try(Url, ParseErr)
 	resolve = |base, reference| resolve_reference(base, reference)
 
 	## Append unencoded path segments.
 	##
 	## Each list item is one segment, so slash characters inside an item are
-	## percent-encoded rather than treated as separators.
+	## percent-encoded rather than treated as separators. An item made only of
+	## dots is encoded too (`..` as `%2E%2E`), so it stays a literal segment:
+	## left bare, normalization read it as a dot segment and `["..", "..",
+	## "admin"]` on `/v1/users/` gave `/admin`. basic-cli 0.21 left it bare.
+	## A server that decodes `%2E` before removing dot segments can still read
+	## it as one; this keeps the URL itself from saying so.
 	append_path_segments : Url, List(Str) -> Url
 	append_path_segments = |url, segments| {
-		suffix = Str.join_with(segments.map(percent_encode), "/")
+		suffix = Str.join_with(segments.map(segment_encode), "/")
 		next_path = 
 			if Str.is_empty(suffix) {
 				url.path
@@ -357,6 +376,11 @@ parse_authority = |authority, scheme| {
 	}
 }
 
+## A host that is not dotted-decimal but ends in a numeric label is refused
+## with `InvalidIpv4`: WHATWG parses any host whose last label is a number as
+## IPv4 (and fails if it is not one), and getaddrinfo reads `0x7f.0.0.1` as
+## 127.0.0.1, so accepting it as a DNS name let one URL name two hosts.
+## basic-cli 0.21 accepted it.
 validate_host : Str -> Try(Str, Url.ParseErr)
 validate_host = |raw_host| {
 	if Str.is_empty(raw_host) {
@@ -365,8 +389,25 @@ validate_host = |raw_host| {
 		Err(InternationalHostUnsupported)
 	} else if List.all(Str.to_utf8(raw_host), |byte| is_digit(byte) or byte == 46) {
 		validate_ipv4(raw_host)
+	} else if ends_in_number(raw_host) {
+		Err(InvalidIpv4(raw_host))
 	} else {
 		validate_dns_name(raw_host)
+	}
+}
+
+## Whether the last label is all digits, or `0x`/`0X` then hex digits: what
+## WHATWG's "ends in a number" test reads as an IPv4 number.
+ends_in_number : Str -> Bool
+ends_in_number = |host| {
+	last = match List.last(Str.split_on(host, ".")) {
+		Ok(label) => Str.to_utf8(label)
+		Err(_) => []
+	}
+	match last {
+		[] => False
+		['0', x, .. as hex] if x == 'x' or x == 'X' => List.all(hex, is_hex)
+		digits => List.all(digits, is_digit)
 	}
 }
 
@@ -407,10 +448,15 @@ validate_ipv4 = |raw_host| {
 	}
 }
 
+## An octet with a leading zero is refused (RFC 3986's dec-octet has none).
+## It used to be read as decimal with the zero dropped, while WHATWG and
+## `inet_aton` read `010` as octal 8, so `010.0.0.1` named 10.0.0.1 here and
+## 8.0.0.1 there. basic-cli 0.21 accepted it.
 parse_ipv4_parts : List(Str), List(U64) -> Try(List(U64), [BadIpv4Part])
 parse_ipv4_parts = |parts, out|
 	match parts {
 		[] => Ok(out)
+		[first, ..] if List.len(Str.to_utf8(first)) > 1 and starts_with(first, "0") => Err(BadIpv4Part)
 		[first, .. as rest] =>
 			match parse_decimal(first) {
 				Ok(value) =>
@@ -657,10 +703,39 @@ is_forbidden = |byte, kind| {
 
 resolve_reference : Url, Str -> Try(Url, Url.ParseErr)
 resolve_reference = |base, reference| {
-	lower = ascii_lower(reference)
-	if starts_with(lower, "http://") or starts_with(lower, "https://") {
-		parse_absolute(reference)
-	} else if Str.contains(reference, "://") or starts_with(reference, "//") {
+	match reference_scheme(reference) {
+		Ok(scheme) =>
+			match ascii_lower(scheme) {
+				"http" => parse_absolute(reference)
+				"https" => parse_absolute(reference)
+				other => Err(UnsupportedScheme(other))
+			}
+		Err(NoScheme) => resolve_relative(base, reference)
+	}
+}
+
+## The scheme a reference starts with: ALPHA *( ALPHA / DIGIT / "+" / "-" /
+## "." ) then ":" (RFC 3986 §3.1).
+reference_scheme : Str -> Try(Str, [NoScheme])
+reference_scheme = |reference| {
+	bytes = Str.to_utf8(reference)
+	name = List.take_first(bytes, scheme_length(bytes, 0))
+	match (List.first(name), List.get(bytes, List.len(name))) {
+		(Ok(first), Ok(':')) if is_alpha(first) => Ok(Str.from_utf8_lossy(name))
+		_ => Err(NoScheme)
+	}
+}
+
+scheme_length : List(U8), U64 -> U64
+scheme_length = |bytes, index|
+	match List.get(bytes, index) {
+		Ok(byte) if is_alphanumeric(byte) or byte == '+' or byte == '-' or byte == '.' => scheme_length(bytes, index + 1)
+		_ => index
+	}
+
+resolve_relative : Url, Str -> Try(Url, Url.ParseErr)
+resolve_relative = |base, reference| {
+	if Str.contains(reference, "://") or starts_with(reference, "//") {
 		Err(MissingScheme)
 	} else {
 		relative = parse_relative(reference)?
@@ -792,6 +867,18 @@ serialize = |url, include_fragment| {
 
 # Percent encoding and application/x-www-form-urlencoded query handling.
 
+## One path segment. A segment of only dots is a dot segment to every
+## normalizer, so each dot is encoded and the item stays one literal segment.
+segment_encode : Str -> Str
+segment_encode = |segment| {
+	bytes = Str.to_utf8(segment)
+	if !List.is_empty(bytes) and List.all(bytes, |byte| byte == '.') {
+		Str.repeat("%2E", List.len(bytes))
+	} else {
+		percent_encode(segment)
+	}
+}
+
 percent_encode : Str -> Str
 percent_encode = |input|
 	Str.from_utf8_lossy(
@@ -917,6 +1004,9 @@ is_form_unescaped = |byte| is_alphanumeric(byte) or byte == 42 or byte == 45 or 
 
 is_alphanumeric : U8 -> Bool
 is_alphanumeric = |byte| is_digit(byte) or (byte >= 65 and byte <= 90) or (byte >= 97 and byte <= 122)
+
+is_alpha : U8 -> Bool
+is_alpha = |byte| (byte >= 65 and byte <= 90) or (byte >= 97 and byte <= 122)
 
 is_digit : U8 -> Bool
 is_digit = |byte| byte >= 48 and byte <= 57
@@ -1062,10 +1152,28 @@ expect
 	}
 
 expect
-	match Url.parse("https://127.000.000.001:8443/") {
+	match Url.parse("https://127.0.0.1:8443/") {
 		Ok(url) => Url.to_str(url) == "https://127.0.0.1:8443/"
 		Err(_) => False
 	}
+
+## A leading zero is octal to WHATWG and inet_aton, so it is refused rather
+## than read as decimal.
+expect Url.parse("https://127.000.000.001:8443/") == Err(InvalidIpv4("127.000.000.001"))
+expect Url.parse("http://0177.0.0.01/") == Err(InvalidIpv4("0177.0.0.01"))
+expect Url.parse("http://010.0.0.1/") == Err(InvalidIpv4("010.0.0.1"))
+expect Url.parse("http://0.0.0.0/").map_ok(Url.host) == Ok("0.0.0.0")
+expect Url.parse("http://10.0.100.1/").map_ok(Url.host) == Ok("10.0.100.1")
+
+## A host ending in a numeric label is an IPv4 address or nothing.
+expect Url.parse("http://0x7f.0.0.1/") == Err(InvalidIpv4("0x7f.0.0.1"))
+expect Url.parse("http://0X7F.1/") == Err(InvalidIpv4("0X7F.1"))
+expect Url.parse("http://example.0x1f/") == Err(InvalidIpv4("example.0x1f"))
+expect Url.parse("http://example.0x/") == Err(InvalidIpv4("example.0x"))
+expect Url.parse("http://example.123/") == Err(InvalidIpv4("example.123"))
+expect Url.parse("http://0x7f.example.com/").map_ok(Url.host) == Ok("0x7f.example.com")
+expect Url.parse("http://example.0xg/").map_ok(Url.host) == Ok("example.0xg")
+expect Url.parse("http://123abc.com/").map_ok(Url.host) == Ok("123abc.com")
 
 expect
 	match Url.parse("http://[::1]:8080/") {
@@ -1289,6 +1397,29 @@ expect
 		Ok(url) => Url.append_path_segments(url, []) == url
 	}
 
+## Each item stays one segment: dot items cannot climb.
+expect
+	match Url.parse("https://example.com/v1/users/") {
+		Err(_) => False
+		Ok(url) => Url.path(Url.append_path_segments(url, ["..", "..", "admin"])) == "/v1/users/%2E%2E/%2E%2E/admin"
+	}
+
+expect
+	match Url.parse("https://example.com/v1") {
+		Err(_) => False
+		Ok(url) => Url.path(Url.append_path_segments(url, [".", "...", "a.b", ".x"])) == "/v1/%2E/%2E%2E%2E/a.b/.x"
+	}
+
+## The encoded form parses back to itself: normalization leaves it alone.
+expect
+	match Url.parse("https://example.com/v1/users/") {
+		Err(_) => False
+		Ok(url) => {
+			appended = Url.append_path_segments(url, ["..", "admin"])
+			Url.parse(Url.to_str(appended)) == Ok(appended)
+		}
+	}
+
 expect
 	match Url.parse("https://example.com/path?old=1#frag") {
 		Err(_) => False
@@ -1380,7 +1511,31 @@ expect
 expect
 	match Url.parse("https://example.com/a/b") {
 		Err(_) => False
-		Ok(base) => Url.resolve(base, "ftp://other.example/x") == Err(MissingScheme)
+		Ok(base) => Url.resolve(base, "ftp://other.example/x") == Err(UnsupportedScheme("ftp"))
+	}
+
+## A reference with a scheme is absolute: not http(s) is refused, as parse
+## refuses it, and `http:g` has no authority.
+expect
+	match Url.parse("https://example.com/a/b") {
+		Err(_) => False
+		Ok(base) =>
+			Url.resolve(base, "mailto:a") == Err(UnsupportedScheme("mailto")) and
+				Url.resolve(base, "JavaScript:alert(1)") == Err(UnsupportedScheme("javascript")) and
+					Url.resolve(base, "view-source+x.1:y") == Err(UnsupportedScheme("view-source+x.1")) and
+						Url.resolve(base, "http:g") == Err(MissingAuthority) and
+							Url.resolve(base, "https:/g") == Err(MissingAuthority) and
+								Url.resolve(base, "ftp://x") == Url.parse("ftp://x")
+	}
+
+## A colon after the first segment's start is not a scheme.
+expect
+	match Url.parse("https://example.com/a/b") {
+		Err(_) => False
+		Ok(base) =>
+			Url.resolve(base, "./a:b").map_ok(Url.to_str) == Ok("https://example.com/a/a:b") and
+				Url.resolve(base, "1a:b").map_ok(Url.to_str) == Ok("https://example.com/a/1a:b") and
+					Url.resolve(base, "c/d:e").map_ok(Url.to_str) == Ok("https://example.com/a/c/d:e")
 	}
 
 expect
