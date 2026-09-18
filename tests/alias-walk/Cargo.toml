@@ -1,0 +1,12 @@
+[package]
+name = "alias-walk"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Not a trantor component: package.toml does not list it. It compiles
+# fs-core's alias walk from the same source file the host ships, so the walk's
+# tests run under `trantor test .`, which runs `cargo test` here.
+[dependencies]
+
+[workspace]

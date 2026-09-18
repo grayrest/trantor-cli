@@ -5,12 +5,24 @@
 ## from hexadecimal groups with optional :: elision. IPv4-in-IPv6 and Unicode
 ## domain names are intentionally unsupported.
 ##
-## This is basic-cli 0.21's Url, and it diverges from it in three places, each
-## a case where basic-cli's answer let a URL mean something other than what it
-## says: `append_path_segments` refuses a `.` or `..` item, so it returns a
-## `Try`, `resolve` rejects a reference with a scheme other than http/https,
-## and a host that another parser would read as a number (octal, hex, a numeric
-## last label) is refused.
+## This is basic-cli 0.21's Url, and it diverges from it in these places,
+## each a case where basic-cli's answer let a URL mean something other than
+## what it says, or let `parse` and `resolve` disagree:
+##
+## - `append_path_segments` refuses a `.` or `..` item, so it returns a `Try`,
+##   and an empty item is an empty segment (basic-cli dropped `[""]`).
+## - The scheme is read by RFC 3986 §3.1, in `parse` and `resolve` alike, and
+##   any scheme but http/https is `UnsupportedScheme`, whatever follows it.
+##   basic-cli's `parse` split at the first `://`, so `mailto:a` was
+##   `MissingAuthority` and `ftp:a://b` `UnsupportedScheme("ftp:a")`; its
+##   `resolve` read `mailto:a` as a path and `ftp://x` as `MissingScheme`.
+## - A `://` later in a reference (`?next=https://x.com/`) is data, and the
+##   reference resolves; basic-cli refused any reference containing one.
+## - A host that another parser would read as a number (octal, hex, a numeric
+##   last label, an IPv4 octet with a leading zero) is refused.
+## - Empty path segments are kept, as RFC 3986 §5.2.4 keeps them:
+##   `/a//b` stays `/a//b` in `parse` and `resolve`, where basic-cli made it
+##   `/a/b`.
 Url :: {
 	scheme : [Http, Https],
 	host : Str,
@@ -347,41 +359,33 @@ parse_absolute = |input| {
 }
 
 ## The scheme and what follows its `://`. The scheme is read by RFC 3986
-## §3.1, not by splitting at the first `://`: `http:/x://y` is an http
-## reference without an authority, which is `MissingAuthority` as `http:g` is,
-## where the split answered `UnsupportedScheme("http:/x")`.
+## §3.1 for every input, as `resolve` reads it, not by splitting at the first
+## `://`: that split answered `UnsupportedScheme("ftp:a")` for `ftp:a://b`,
+## `MissingAuthority` for `mailto:a`, and `UnsupportedScheme("http:/x")` for
+## `http:/x://y`, where `resolve` read the schemes `ftp`, `mailto` and `http`.
+## A scheme other than http/https is refused whatever follows it; an http(s)
+## one without `//` has no authority, as `http:g` has none.
 split_scheme : Str -> Try({ scheme : [Http, Https], after : Str }, Url.ParseErr)
-split_scheme = |input| {
-	web = match reference_scheme(input) {
-		Ok(name) =>
-			match ascii_lower(name) {
-				"http" => Ok((Http, name))
-				"https" => Ok((Https, name))
-				_ => Err(NotWeb)
-			}
-		Err(NoScheme) => Err(NotWeb)
-	}
-	match web {
-		Ok((scheme, name)) => {
+split_scheme = |input|
+	match reference_scheme(input) {
+		Err(NoScheme) => Err(MissingScheme)
+		Ok(name) => {
 			rest = drop_prefix(input, Str.concat(name, ":"))
-			if starts_with(rest, "//") {
-				Ok({ scheme, after: drop_prefix(rest, "//") })
-			} else {
-				Err(MissingAuthority)
+			match ascii_lower(name) {
+				"http" => split_authority_slashes(Http, rest)
+				"https" => split_authority_slashes(Https, rest)
+				other => Err(UnsupportedScheme(other))
 			}
 		}
-		Err(NotWeb) =>
-			match split_first(input, "://") {
-				Found(parts) => Err(UnsupportedScheme(ascii_lower(parts.before)))
-				NotFound =>
-					if Str.contains(input, ":") {
-						Err(MissingAuthority)
-					} else {
-						Err(MissingScheme)
-					}
-				}
 	}
-}
+
+split_authority_slashes : [Http, Https], Str -> Try({ scheme : [Http, Https], after : Str }, Url.ParseErr)
+split_authority_slashes = |scheme, rest|
+	if starts_with(rest, "//") {
+		Ok({ scheme, after: drop_prefix(rest, "//") })
+	} else {
+		Err(MissingAuthority)
+	}
 
 parse_authority : Str, [Http, Https] -> Try({ host : Str, port : [None, Some(U16)] }, Url.ParseErr)
 parse_authority = |authority, scheme| {
@@ -745,13 +749,10 @@ is_forbidden = |byte, kind| {
 
 resolve_reference : Url, Str -> Try(Url, Url.ParseErr)
 resolve_reference = |base, reference| {
+	# `parse_absolute` reads the scheme with the same `reference_scheme`, so a
+	# reference with one gets exactly the answer `parse` gives it.
 	match reference_scheme(reference) {
-		Ok(scheme) =>
-			match ascii_lower(scheme) {
-				"http" => parse_absolute(reference)
-				"https" => parse_absolute(reference)
-				other => Err(UnsupportedScheme(other))
-			}
+		Ok(_) => parse_absolute(reference)
 		Err(NoScheme) => resolve_relative(base, reference)
 	}
 }
@@ -1230,7 +1231,11 @@ expect
 
 expect Url.parse("example.com") == Err(MissingScheme)
 
-expect Url.parse("mailto:user@example.com") == Err(MissingAuthority)
+## Any scheme but http/https is refused by name, whatever follows it.
+expect Url.parse("mailto:user@example.com") == Err(UnsupportedScheme("mailto"))
+expect Url.parse("mailto:a") == Err(UnsupportedScheme("mailto"))
+expect Url.parse("ftp:a://b") == Err(UnsupportedScheme("ftp"))
+expect Url.parse("FTP://x") == Err(UnsupportedScheme("ftp"))
 
 expect Url.parse("ftp://example.com") == Err(UnsupportedScheme("ftp"))
 
@@ -1628,6 +1633,18 @@ expect
 	}
 expect Url.parse("http:/x://y") == Err(MissingAuthority)
 expect Url.parse("https:x://y") == Err(MissingAuthority)
+
+## `parse` and `resolve` read the same scheme, so they give the same answer.
+expect
+	match Url.parse("https://example.com/a/b") {
+		Err(_) => False
+		Ok(base) =>
+			List.all(
+				["ftp:a://b", "mailto:a", "FTP://x", "http:g", "https://other.example/x"],
+				|reference| Url.resolve(base, reference) == Url.parse(reference),
+			) and
+				Url.resolve(base, "mailto:a") == Err(UnsupportedScheme("mailto"))
+	}
 
 expect
 	match Url.from_quote("not a url") {

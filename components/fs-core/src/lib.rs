@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 
 pub use paste;
 
+mod alias;
 mod copy;
 
 /// The one policy knob: where the preopen points, and whether escapes are
@@ -122,14 +123,14 @@ fn relative_to_root(base: &Path, cand: &Path) -> std::io::Result<PathBuf> {
 /// root whose chain led back in was followed, where cap-std refuses it. The
 /// shortest match wins, so what follows the root goes to cap-std as spelled,
 /// links and `..` included, and it judges them from the root handle.
+///
+/// The walk stops at the first prefix that does not canonicalize: every longer
+/// one fails too, so going on made refusing a long outside path quadratic in
+/// its length. The cost is now bounded by the part of the path that exists.
+/// It is not constant: how far the walk goes still depends on whether the
+/// outside prefix exists, so refusing one that does takes measurably longer.
 fn aliased_rest(cand: &Path, canonical_base: &Path) -> Option<PathBuf> {
-    use std::path::Component;
-    let parts: Vec<Component> = cand.components().collect();
-    let plain = parts.iter().take_while(|c| matches!(c, Component::RootDir | Component::Normal(_))).count();
-    (1..=plain).find_map(|k| {
-        let prefix: PathBuf = parts[..k].iter().collect();
-        (prefix.canonicalize().ok()? == canonical_base).then(|| parts[k..].iter().collect())
-    })
+    alias::aliased_rest_by(cand, canonical_base, |p| p.canonicalize())
 }
 
 /// The tail components rebuilding drops: `/.` if the path ends in a `.`
