@@ -96,7 +96,7 @@ fn relative_to_root(base: &Path, cand: &Path) -> std::io::Result<PathBuf> {
             let cb = base.canonicalize()?;
             match cand.strip_prefix(&cb) {
                 Ok(r) => r.to_path_buf(),
-                Err(_) => ancestor_resolved(cand).as_deref().and_then(|p| p.strip_prefix(&cb).ok()).map(Path::to_path_buf).ok_or_else(outside)?,
+                Err(_) => aliased_rest(cand, &cb).ok_or_else(outside)?,
             }
         }
     };
@@ -111,22 +111,24 @@ fn relative_to_root(base: &Path, cand: &Path) -> std::io::Result<PathBuf> {
     Ok(PathBuf::from(spelled))
 }
 
-/// `cand` with its deepest existing PROPER ancestor canonicalized and the rest
-/// reattached as spelled, or `None` if no ancestor resolves.
+/// The part of `cand` after a prefix that is the root under another spelling
+/// (`/tmp/x` for `/private/tmp/x`), or `None` if no prefix is.
 ///
-/// The last component is never resolved: the operation may create it, and a
-/// symlink there must stay the link (canonicalizing it made `delete!` act on
-/// the target). What follows the ancestor is not resolved either, `..`
-/// included: it goes to cap-std as spelled, which walks it from the root handle
-/// and refuses it if it leaves. Resolving it lexically here could turn a path
-/// that climbs out through a link into one that looks inside.
-fn ancestor_resolved(cand: &Path) -> Option<PathBuf> {
-    let parts: Vec<std::path::Component> = cand.components().collect();
-    (1..parts.len()).rev().find_map(|k| {
-        let ancestor: PathBuf = parts[..k].iter().collect();
-        let mut resolved = ancestor.canonicalize().ok()?;
-        resolved.extend(&parts[k..]);
-        Some(resolved)
+/// Only a prefix of plain names counts, and it must canonicalize to the root
+/// itself. This used to canonicalize the deepest existing ancestor, `..`
+/// included, with the process's own access: `<outside>/.ssh/../../<root>/f`
+/// resolved inside where `<outside>/.nope/../../<root>/f` did not, so a
+/// confined app learned whether paths outside it exist, and a link out of the
+/// root whose chain led back in was followed, where cap-std refuses it. The
+/// shortest match wins, so what follows the root goes to cap-std as spelled,
+/// links and `..` included, and it judges them from the root handle.
+fn aliased_rest(cand: &Path, canonical_base: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+    let parts: Vec<Component> = cand.components().collect();
+    let plain = parts.iter().take_while(|c| matches!(c, Component::RootDir | Component::Normal(_))).count();
+    (1..=plain).find_map(|k| {
+        let prefix: PathBuf = parts[..k].iter().collect();
+        (prefix.canonicalize().ok()? == canonical_base).then(|| parts[k..].iter().collect())
     })
 }
 
@@ -669,6 +671,7 @@ pub mod ops {
     pub fn remove_dir_all_at(r: &Root, d: *mut u64, p: RocListWith<u8, false>) -> FsCreateDirAtResult {
         dir_unit(with_path(r, d, p, |tg| {
             refuse_trailing_dot(&tg)?;
+            refuse_confined_root(&tg)?;
             let tg = existing_directory_name(tg)?;
             both!(tg, remove_dir_all)
         }))
@@ -678,18 +681,37 @@ pub mod ops {
     /// cwd as `.`) emptied the directory and only then failed, when the final
     /// `rmdir` answered EINVAL for the `.` — through `dirlink/.` it emptied the
     /// directory the link leads to. The name cannot be removed, so refuse it
-    /// before deleting anything, as `ends_in_parent` does for `..`. A bare `.`
-    /// is the root named plainly beneath it, which stays removable by name.
-    /// `remove_dir_at` needs none of this: its single `rmdir` refuses first.
+    /// before deleting anything, as `ends_in_parent` does for `..`. A `.`
+    /// never reaches here bare: the shim joins it onto the cwd and `resolve`
+    /// onto the descriptor's directory, so it arrives as `<dir>/.` and is
+    /// refused on both backends. `remove_dir_at` needs none of this: its single
+    /// `rmdir` refuses first.
     fn refuse_trailing_dot(tg: &Target) -> std::io::Result<()> {
         let mut b = tg.path().as_os_str().as_bytes();
         while let Some(rest) = b.strip_suffix(b"/") {
             b = rest;
         }
         if b.ends_with(b"/.") {
-            return Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "a directory named through . cannot be removed"));
+            return Err(unremovable("a directory named through . cannot be removed"));
         }
         Ok(())
+    }
+
+    /// The confined root itself, however it was spelled (`<root>`, `<root>/`,
+    /// an alias of it): every such spelling resolves to a path of nothing but
+    /// `.` beneath the handle. cap-std emptied the root and only then failed,
+    /// EINVAL, removing the handle's own directory. Unconfined, the directory
+    /// is an ordinary one and removing it by name is still allowed.
+    fn refuse_confined_root(tg: &Target) -> std::io::Result<()> {
+        let Target::Beneath(_, p) = tg else { return Ok(()) };
+        if p.components().all(|c| c == std::path::Component::CurDir) {
+            return Err(unremovable("the confined root cannot be removed"));
+        }
+        Ok(())
+    }
+
+    fn unremovable(why: &str) -> std::io::Error {
+        std::io::Error::new(std::io::ErrorKind::Unsupported, why)
     }
 
     /// A directory that must not exist yet, then its own error where the name
@@ -867,9 +889,19 @@ pub mod ops {
     /// `rename_at`/`link_at` re-check a symlink they move. Not airtight:
     /// renaming a directory that holds relative links is not checked, and the
     /// target can change between check and create.
+    ///
+    /// An empty target is refused on both backends, `NotFound` as for an empty
+    /// path (D-S2-58). Both used to create the link, and then the backends
+    /// disagreed on what it names: cap-std follows it as the link's own
+    /// directory, the kernel answers `NotFound`, so a confined `delete_all!`
+    /// through one deleted a real directory. A link like that made by another
+    /// program is still followed that way beneath the root and not outside it.
     pub fn symlink_at(r: &Root, d: *mut u64, target: RocListWith<u8, false>, link: RocListWith<u8, false>) -> FsWriteFileAtResult {
         let contents = PathBuf::from(std::ffi::OsStr::from_bytes(&bytes(&target))); unsafe { target.decref(abi::host()) };
         unit(with_path(r, d, link, |tg| {
+            if contents.as_os_str().is_empty() {
+                return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "an empty symlink target names nothing"));
+            }
             refuse_directory_name(&tg)?;
             match tg {
                 Target::Ambient(p) => std::os::unix::fs::symlink(&contents, p),

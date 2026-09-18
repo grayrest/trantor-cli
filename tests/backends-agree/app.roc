@@ -65,25 +65,42 @@ here! = || Str.to_utf8(Path.display(Env.cwd!() ?? Path.utf8(".")))
 root! : () => Fs.Descriptor
 root! = || Fs.preopens!({}).first() ?? crash("no preopen")
 
-## With two arguments, the root spelled through a link to one of its
+## With three arguments, the root spelled through a link to one of its
 ## ancestors instead (see `alias!`).
 main! : List(OsStr) => Try({}, _)
-main! = |args| match (List.get(args, 1), List.get(args, 2)) {
-	(Ok(inside), Ok(outside)) => alias!(OsStr.display(inside), OsStr.display(outside))
+main! = |args| match (List.get(args, 1), List.get(args, 2), List.get(args, 3)) {
+	(Ok(inside), Ok(outside), Ok(parent)) => alias!(OsStr.display(inside), OsStr.display(outside), OsStr.display(parent))
 	_ => agree!()
 }
 
 ## The root as `<link>/c`, where the link leads to the root's parent, as `/tmp`
 ## leads to `/private`: confined, only the canonical spelling used to be
-## inside. `outside` is a file beside the root, through the same link.
-alias! : Str, Str => Try({}, _)
-alias! = |inside, outside| {
+## inside. `outside` is a file beside the root, through the same link;
+## `parent` is the root's parent, spelled canonically. Confined only: the
+## last lines remove the root.
+alias! : Str, Str, Str => Try({}, _)
+alias! = |inside, outside, parent| {
 	lines = [
 		"alias-read ${outcome(Path.read_utf8!(Path.utf8("${inside}/keep.txt")))}",
 		"alias-write ${outcome(Path.write_utf8!(Path.utf8("${inside}/alias-new.txt"), "new"))}",
 		"alias-missing ${outcome(Path.read_utf8!(Path.utf8("${inside}/nothing-here")))}",
 		"alias-escape ${outcome(Path.read_utf8!(Path.utf8("${inside}/../p/keep.txt")))}",
 		"alias-outside ${outcome(Path.read_utf8!(Path.utf8(outside)))}",
+		# Climbing back in from outside answers the same whether the directory
+		# it climbs out of exists: the alias check resolved `p/..` with the
+		# process's own access, so it told a confined app that `p` exists.
+		"probe-existing ${outcome(Path.read_utf8!(Path.utf8("${parent}/p/../c/keep.txt")))}",
+		"probe-missing ${outcome(Path.read_utf8!(Path.utf8("${parent}/nope/../c/keep.txt")))}",
+		# `out` leads outside and back in; through the alias it was followed,
+		# spelled directly cap-std refuses it.
+		"chain-direct ${outcome(Path.read_utf8!(Path.utf8("${parent}/c/out/f")))}",
+		"chain-alias ${outcome(Path.read_utf8!(Path.utf8("${inside}/out/f")))}",
+		# The root cannot be removed by any name for it: cap-std emptied it and
+		# then failed.
+		"root-delete-all ${outcome(Path.delete_all!(Path.utf8("${parent}/c")))}",
+		"root-delete-all-slash ${outcome(Path.delete_all!(Path.utf8("${parent}/c/")))}",
+		"root-delete-all-alias ${outcome(Path.delete_all!(Path.utf8(inside)))}",
+		"root-raw-remove-all ${raw(Fs.remove_dir_all_at!(root!(), Str.to_utf8("${parent}/c")))}",
 	]
 	Stdout.line!(Str.join_with(lines, "\n"))
 }
@@ -199,6 +216,9 @@ agree! = || {
 		"delete-all-link-dot ${outcome(Path.delete_all!(Path.utf8("dotlink/.")))}",
 		"delete-empty-trailing-dot ${outcome(Path.delete_empty!(Path.utf8("dotempty/.")))}",
 		"delete-all-bare-dot ${outcome(Path.delete_all!(Path.utf8(".")))}",
+		# A link with an empty target: cap-std follows it as its own directory,
+		# the kernel answers NotFound, so none is made.
+		"symlink-empty-target ${raw(Fs.symlink_at!(root!(), [], abs!("emptytarget-link")))}",
 	]
 	Stdout.line!(Str.join_with(lines, "\n"))
 }

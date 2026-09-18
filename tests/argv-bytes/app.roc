@@ -5,13 +5,16 @@ import pf.Stdout
 import pf.Env
 import pf.Cli
 import pf.Path
+import pf.Locale
 
 ## `paths REL`: the process's own paths, each as the bytes it arrived with or
 ## the failure it reported, and what reading the relative path REL gives.
+## `locale`: the locales the environment names, most preferred first.
 ## Anything else: the tag each argument arrived with.
 main! : List(OsStr) => Try({}, _)
 main! = |args| match (List.get(args, 1), List.get(args, 2)) {
 	(Ok(mode), Ok(relative)) if OsStr.display(mode) == "paths" => paths!(OsStr.display(relative))
+	(Ok(mode), _) if OsStr.display(mode) == "locale" => Stdout.line!("locales [${Str.join_with(List.map(Locale.all!(), Locale.to_str), ",")}]")
 	_ => {
 		tags = List.map(List.drop_first(args, 1), tag)
 		Stdout.line!(Str.join_with(tags, ","))

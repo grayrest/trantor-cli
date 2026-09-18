@@ -7,9 +7,10 @@
 ##
 ## This is basic-cli 0.21's Url, and it diverges from it in three places, each
 ## a case where basic-cli's answer let a URL mean something other than what it
-## says: `append_path_segments` encodes a `.` or `..` item, `resolve` rejects a
-## reference with a scheme other than http/https, and a host that another
-## parser would read as a number (octal, hex, a numeric last label) is refused.
+## says: `append_path_segments` refuses a `.` or `..` item, so it returns a
+## `Try`, `resolve` rejects a reference with a scheme other than http/https,
+## and a host that another parser would read as a number (octal, hex, a numeric
+## last label) is refused.
 Url :: {
 	scheme : [Http, Https],
 	host : Str,
@@ -175,34 +176,22 @@ Url :: {
 	## Append unencoded path segments.
 	##
 	## Each list item is one segment, so slash characters inside an item are
-	## percent-encoded rather than treated as separators. An item made only of
-	## dots is encoded too (`..` as `%2E%2E`), so it stays a literal segment:
-	## left bare, normalization read it as a dot segment and `["..", "..",
-	## "admin"]` on `/v1/users/` gave `/admin`. basic-cli 0.21 left it bare.
-	## A server that decodes `%2E` before removing dot segments can still read
-	## it as one; this keeps the URL itself from saying so.
-	append_path_segments : Url, List(Str) -> Url
-	append_path_segments = |url, segments| {
-		suffix = Str.join_with(segments.map(segment_encode), "/")
-		next_path = 
-			if Str.is_empty(suffix) {
-				url.path
-			} else if url.path == "/" {
-				Str.concat("/", suffix)
-			} else if ends_with(url.path, "/") {
-				Str.concat(url.path, suffix)
-			} else {
-				Str.concat(Str.concat(url.path, "/"), suffix)
-			}
-		Url.{
-			scheme: url.scheme,
-			host: url.host,
-			port: url.port,
-			path: normalize_path(next_path),
-			query: url.query,
-			fragment: url.fragment,
+	## percent-encoded rather than treated as separators, and an empty item is
+	## an empty segment. An item that is `.` or `..` is `Err(DotSegment(item))`:
+	## no spelling of it stays one literal segment. Left bare, normalization
+	## read it as a dot segment and `["..", "..", "admin"]` on `/v1/users/`
+	## gave `/admin`; encoded as `%2E%2E`, WHATWG and RFC 3986 still read it as
+	## `..`, and so do servers that follow them. Other dot-only items, `...`
+	## included, are ordinary names to WHATWG, and are kept.
+	##
+	## basic-cli 0.21's signature is `Url, List(Str) -> Url`, and it appended
+	## `..` bare.
+	append_path_segments : Url, List(Str) -> Try(Url, [DotSegment(Str)])
+	append_path_segments = |url, segments|
+		match List.find_first(segments, is_dot_segment) {
+			Ok(dots) => Err(DotSegment(dots))
+			Err(_) => Ok(with_segments(url, segments))
 		}
-	}
 
 	## Append one application/x-www-form-urlencoded query pair.
 	##
@@ -300,27 +289,43 @@ Url :: {
 	}
 }
 
+## `url` with `segments` appended, none of them a dot segment. An empty list
+## leaves the path as it was; an empty item is an empty segment.
+with_segments : Url, List(Str) -> Url
+with_segments = |url, segments| {
+	suffix = Str.join_with(segments.map(percent_encode), "/")
+	next_path =
+		if List.is_empty(segments) {
+			url.path
+		} else if url.path == "/" {
+			Str.concat("/", suffix)
+		} else if ends_with(url.path, "/") {
+			Str.concat(url.path, suffix)
+		} else {
+			Str.concat(Str.concat(url.path, "/"), suffix)
+		}
+	Url.{
+		scheme: url.scheme,
+		host: url.host,
+		port: url.port,
+		path: normalize_path(next_path),
+		query: url.query,
+		fragment: url.fragment,
+	}
+}
+
+## A path segment every normalizer removes or climbs with. WHATWG also reads
+## `%2e` for a dot, but an item is encoded before it is a segment, so its `%`
+## is `%25` and only the bare dots matter here.
+is_dot_segment : Str -> Bool
+is_dot_segment = |segment| segment == "." or segment == ".."
+
 # Absolute URL and authority parsing.
 
 parse_absolute : Str -> Try(Url, Url.ParseErr)
 parse_absolute = |input| {
-	scheme_parts = 
-		match split_first(input, "://") {
-			Found(parts) => Ok(parts)
-			NotFound =>
-				if Str.contains(input, ":") {
-					Err(MissingAuthority)
-				} else {
-					Err(MissingScheme)
-				}
-			}?
-	scheme = 
-		match ascii_lower(scheme_parts.before) {
-			"http" => Ok(Http)
-			"https" => Ok(Https)
-			other => Err(UnsupportedScheme(other))
-		}?
-	{ authority, suffix } = split_authority(scheme_parts.after)
+	{ scheme, after } = split_scheme(input)?
+	{ authority, suffix } = split_authority(after)
 	if Str.is_empty(authority) {
 		Err(EmptyHost)
 	} else if Str.contains(authority, "@") {
@@ -338,6 +343,43 @@ parse_absolute = |input| {
 				fragment: components.fragment,
 			},
 		)
+	}
+}
+
+## The scheme and what follows its `://`. The scheme is read by RFC 3986
+## §3.1, not by splitting at the first `://`: `http:/x://y` is an http
+## reference without an authority, which is `MissingAuthority` as `http:g` is,
+## where the split answered `UnsupportedScheme("http:/x")`.
+split_scheme : Str -> Try({ scheme : [Http, Https], after : Str }, Url.ParseErr)
+split_scheme = |input| {
+	web = match reference_scheme(input) {
+		Ok(name) =>
+			match ascii_lower(name) {
+				"http" => Ok((Http, name))
+				"https" => Ok((Https, name))
+				_ => Err(NotWeb)
+			}
+		Err(NoScheme) => Err(NotWeb)
+	}
+	match web {
+		Ok((scheme, name)) => {
+			rest = drop_prefix(input, Str.concat(name, ":"))
+			if starts_with(rest, "//") {
+				Ok({ scheme, after: drop_prefix(rest, "//") })
+			} else {
+				Err(MissingAuthority)
+			}
+		}
+		Err(NotWeb) =>
+			match split_first(input, "://") {
+				Found(parts) => Err(UnsupportedScheme(ascii_lower(parts.before)))
+				NotFound =>
+					if Str.contains(input, ":") {
+						Err(MissingAuthority)
+					} else {
+						Err(MissingScheme)
+					}
+				}
 	}
 }
 
@@ -735,7 +777,11 @@ scheme_length = |bytes, index|
 
 resolve_relative : Url, Str -> Try(Url, Url.ParseErr)
 resolve_relative = |base, reference| {
-	if Str.contains(reference, "://") or starts_with(reference, "//") {
+	# A network-path reference (`//host/x`) is refused. A `://` anywhere else
+	# is not a scheme, since `resolve_reference` has already found any scheme
+	# there is: it is a path, query or fragment (`?next=https://x.com/`), and
+	# refusing it made a login redirect unresolvable.
+	if starts_with(reference, "//") {
 		Err(MissingScheme)
 	} else {
 		relative = parse_relative(reference)?
@@ -787,6 +833,11 @@ parse_relative = |reference| {
 	Ok({ path, query: encoded_query, fragment: encoded_fragment })
 }
 
+## RFC 3986 §5.2.4's remove_dot_segments, as WHATWG does it: a `.` segment
+## is dropped and a `..` drops the segment before it, and either one last
+## leaves the path ending in `/`. Every other segment is kept, an empty one
+## included. Empty segments used to be dropped too, so `/v1//x/../y` became
+## `/v1/y` where both references give `/v1//y`.
 normalize_path : Str -> Str
 normalize_path = |path_str| {
 	rooted = if starts_with(path_str, "/") {
@@ -794,21 +845,17 @@ normalize_path = |path_str| {
 	} else {
 		Str.concat("/", path_str)
 	}
-	trailing = ends_with(rooted, "/") or ends_with(rooted, "/.") or ends_with(rooted, "/..")
-	normalized = normalize_segments(Str.split_on(rooted, "/"), [])
-	joined = Str.concat("/", Str.join_with(normalized, "/"))
-	if trailing and joined != "/" {
-		Str.concat(joined, "/")
-	} else {
-		joined
-	}
+	# The first item is the empty string before the leading `/`.
+	segments = List.drop_first(Str.split_on(rooted, "/"), 1)
+	Str.concat("/", Str.join_with(normalize_segments(segments, []), "/"))
 }
 
 normalize_segments : List(Str), List(Str) -> List(Str)
 normalize_segments = |segments, out|
 	match segments {
 		[] => out
-		["", .. as rest] => normalize_segments(rest, out)
+		["."] => out.append("")
+		[".."] => List.drop_last(out, 1).append("")
 		[".", .. as rest] => normalize_segments(rest, out)
 		["..", .. as rest] => normalize_segments(rest, List.drop_last(out, 1))
 		[first, .. as rest] => normalize_segments(rest, out.append(first))
@@ -866,18 +913,6 @@ serialize = |url, include_fragment| {
 }
 
 # Percent encoding and application/x-www-form-urlencoded query handling.
-
-## One path segment. A segment of only dots is a dot segment to every
-## normalizer, so each dot is encoded and the item stays one literal segment.
-segment_encode : Str -> Str
-segment_encode = |segment| {
-	bytes = Str.to_utf8(segment)
-	if !List.is_empty(bytes) and List.all(bytes, |byte| byte == '.') {
-		Str.repeat("%2E", List.len(bytes))
-	} else {
-		percent_encode(segment)
-	}
-}
 
 percent_encode : Str -> Str
 percent_encode = |input|
@@ -1239,11 +1274,15 @@ expect
 	match Url.parse("https://example.com/") {
 		Err(_) => False
 		Ok(url) => {
-			with_path = Url.append_path_segments(url, ["a/b", "café"])
-			with_first = Url.append_query_param(with_path, "tag", "one")
-			built = Url.append_query_param(with_first, "tag", "two words")
-			Url.to_str(built) == "https://example.com/a%2Fb/caf%C3%A9?tag=one&tag=two+words" and
-				Url.query_pairs(built) == [("tag", "one"), ("tag", "two words")]
+			match Url.append_path_segments(url, ["a/b", "café"]) {
+				Err(_) => False
+				Ok(with_path) => {
+					with_first = Url.append_query_param(with_path, "tag", "one")
+					built = Url.append_query_param(with_first, "tag", "two words")
+					Url.to_str(built) == "https://example.com/a%2Fb/caf%C3%A9?tag=one&tag=two+words" and
+						Url.query_pairs(built) == [("tag", "one"), ("tag", "two words")]
+				}
+			}
 		}
 	}
 
@@ -1385,40 +1424,61 @@ expect
 expect
 	match Url.parse("https://example.com/base?old=1#frag") {
 		Err(_) => False
-		Ok(url) => {
-			appended = Url.append_path_segments(url, ["space here", "?and#"])
-			Url.to_str(appended) == "https://example.com/base/space%20here/%3Fand%23?old=1#frag"
-		}
+		Ok(url) => Url.append_path_segments(url, ["space here", "?and#"]).map_ok(Url.to_str) == Ok("https://example.com/base/space%20here/%3Fand%23?old=1#frag")
 	}
 
 expect
 	match Url.parse("https://example.com/base") {
 		Err(_) => False
-		Ok(url) => Url.append_path_segments(url, []) == url
+		Ok(url) => Url.append_path_segments(url, []) == Ok(url)
 	}
 
-## Each item stays one segment: dot items cannot climb.
+## A `.` or `..` item is refused: `%2E%2E` is still `..` to WHATWG and RFC
+## 3986, so no spelling keeps it one literal segment.
 expect
 	match Url.parse("https://example.com/v1/users/") {
 		Err(_) => False
-		Ok(url) => Url.path(Url.append_path_segments(url, ["..", "..", "admin"])) == "/v1/users/%2E%2E/%2E%2E/admin"
+		Ok(url) =>
+			Url.append_path_segments(url, ["..", "..", "admin"]) == Err(DotSegment("..")) and
+				Url.append_path_segments(url, ["a", "."]) == Err(DotSegment("."))
 	}
 
+## Other dot-only items are names to WHATWG (`/v1/...` stays `/v1/...`).
 expect
 	match Url.parse("https://example.com/v1") {
 		Err(_) => False
-		Ok(url) => Url.path(Url.append_path_segments(url, [".", "...", "a.b", ".x"])) == "/v1/%2E/%2E%2E%2E/a.b/.x"
+		Ok(url) => Url.append_path_segments(url, ["...", "a.b", ".x"]).map_ok(Url.path) == Ok("/v1/.../a.b/.x")
 	}
 
-## The encoded form parses back to itself: normalization leaves it alone.
+## The appended form parses back to itself: normalization leaves it alone.
 expect
 	match Url.parse("https://example.com/v1/users/") {
 		Err(_) => False
-		Ok(url) => {
-			appended = Url.append_path_segments(url, ["..", "admin"])
-			Url.parse(Url.to_str(appended)) == Ok(appended)
+		Ok(url) =>
+			match Url.append_path_segments(url, ["...", "", "admin"]) {
+				Err(_) => False
+				Ok(appended) => Url.parse(Url.to_str(appended)) == Ok(appended)
+			}
 		}
+
+## An empty item is an empty segment, as `new URL` keeps one.
+expect
+	match Url.parse("https://example.com/v1") {
+		Err(_) => False
+		Ok(url) =>
+			Url.append_path_segments(url, ["", "x"]).map_ok(Url.path) == Ok("/v1//x") and
+				Url.append_path_segments(url, [""]).map_ok(Url.path) == Ok("/v1/")
 	}
+
+## Dot segments are removed and empty ones kept, as WHATWG does
+## (`new URL(...).pathname`).
+expect Url.parse("https://e.com/v1//x/../y").map_ok(Url.path) == Ok("/v1//y")
+expect Url.parse("https://e.com//a").map_ok(Url.path) == Ok("//a")
+expect Url.parse("https://e.com/a//..").map_ok(Url.path) == Ok("/a/")
+expect Url.parse("https://e.com/a/b/.").map_ok(Url.path) == Ok("/a/b/")
+expect Url.parse("https://e.com/a/b/..").map_ok(Url.path) == Ok("/a/")
+expect Url.parse("https://e.com/..").map_ok(Url.path) == Ok("/")
+expect Url.parse("https://e.com/a/./../b//").map_ok(Url.path) == Ok("/b//")
 
 expect
 	match Url.parse("https://example.com/path?old=1#frag") {
@@ -1537,6 +1597,37 @@ expect
 				Url.resolve(base, "1a:b").map_ok(Url.to_str) == Ok("https://example.com/a/1a:b") and
 					Url.resolve(base, "c/d:e").map_ok(Url.to_str) == Ok("https://example.com/a/c/d:e")
 	}
+
+## A `://` after the start is not a scheme: in a query, fragment or later
+## path segment it is data. Each answer is WHATWG's for the same base.
+expect
+	match Url.parse("https://example.com/a/b") {
+		Err(_) => False
+		Ok(base) =>
+			Url.resolve(base, "?next=https://x.com/").map_ok(Url.to_str) == Ok("https://example.com/a/b?next=https://x.com/") and
+				Url.resolve(base, "/login?next=https://x.com/").map_ok(Url.to_str) == Ok("https://example.com/login?next=https://x.com/") and
+					Url.resolve(base, "#https://x").map_ok(Url.to_str) == Ok("https://example.com/a/b#https://x") and
+						Url.resolve(base, "./a://b").map_ok(Url.to_str) == Ok("https://example.com/a/a://b")
+	}
+
+## Resolving keeps empty segments, as WHATWG does.
+expect
+	match Url.parse("https://example.com/a/b") {
+		Err(_) => False
+		Ok(base) =>
+			Url.resolve(base, "c//d/../e").map_ok(Url.to_str) == Ok("https://example.com/a/c//e")
+	}
+
+## An http(s) scheme without `//` has no authority, however much follows.
+expect
+	match Url.parse("https://example.com/a/b") {
+		Err(_) => False
+		Ok(base) =>
+			Url.resolve(base, "http:/x://y") == Err(MissingAuthority) and
+				Url.resolve(base, "HTTPS:x://y") == Err(MissingAuthority)
+	}
+expect Url.parse("http:/x://y") == Err(MissingAuthority)
+expect Url.parse("https:x://y") == Err(MissingAuthority)
 
 expect
 	match Url.from_quote("not a url") {

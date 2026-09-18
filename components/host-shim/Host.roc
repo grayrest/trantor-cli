@@ -335,6 +335,8 @@ expect locale_tags(locale_candidates("", ["", "", "fr_FR.UTF-8"])) == ["fr-FR"]
 # LANGUAGE leads, unless the effective locale is C.
 expect locale_tags(locale_candidates("en_US:en_us", ["", "", "fr_FR.UTF-8"])) == ["en-US", "fr-FR"]
 expect locale_tags(locale_candidates("de_DE:en_US", ["C", "", ""])) == []
+# C with a codeset is still C, so LANGUAGE is ignored with it.
+expect locale_tags(locale_candidates("de_DE", ["C.UTF-8", "", ""])) == []
 expect locale_tags(locale_candidates("de_DE", ["", "", ""])) == ["de-DE"]
 expect locale_tags(locale_candidates("", ["", "", ""])) == []
 

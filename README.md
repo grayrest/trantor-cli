@@ -472,7 +472,7 @@ query_pairs : Url -> List((Str, Str))                     # form-decoded, in ord
 
 # changing
 resolve : Url, Str -> Try(Url, ParseErr)                  # a relative reference or absolute http(s) URL; other schemes refused
-append_path_segments : Url, List(Str) -> Url              # a "/" inside an item is encoded, and a "." or ".." item
+append_path_segments : Url, List(Str) -> Try(Url, [DotSegment(Str)])  # a "/" inside an item is encoded; a "." or ".." item is refused (basic-cli 0.21 returns Url)
 append_query_param : Url, Str, Str -> Url                 # name, value
 with_query : Url, [None, Some(Str)] -> Try(Url, ParseErr)
 with_fragment : Url, [None, Some(Str)] -> Try(Url, ParseErr)

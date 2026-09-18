@@ -18,7 +18,10 @@ provided = """
 ## which is what a CLI does. The error is written to stderr first, in basic-cli
 ## 0.21's words: it used to be dropped, so an app that failed on an unexpected
 ## error exited 1 with nothing said about why. A failed write is ignored, as
-## basic-cli ignores it; the status is still 1.
+## basic-cli ignores it, and the status is still 1, with one exception: when
+## stderr is a pipe whose reader has gone, the write raises SIGPIPE, whose
+## default action apps keep (D-S2-26), so the process dies of the signal and
+## there is no status 1.
 ##
 ## argv is handed over as it arrives. It used to be re-tagged element by
 ## element because the hosted leaf returned `List(Str)` and `main!` wanted a
