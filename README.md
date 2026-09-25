@@ -49,7 +49,7 @@ import pf.Cli
 import pf.Streams
 import pf.Clocks
 
-main! : List(OsStr) => Try({}, [Io(IOErr), ..])
+main! : List(OsStr) => Try({}, [Io(IOErr)])
 main! = |_args| {
 	out = Cli.get_stdout!({})
 	n = List.len(Cli.args!({}))
@@ -285,42 +285,42 @@ ext : Path -> Try(Path, [IsDirPath, EndsInDots])          # without the dot
 join : Path, Str -> Path
 
 # what is on disk
-type! : Path => Try([IsFile, IsDir, IsSymLink, IsOther], [PathErr(IOErr), ..])
-exists! : Path => Try(Bool, [PathErr(IOErr), ..])
-is_file! : Path => Try(Bool, [PathErr(IOErr), ..])        # a link is not followed
-is_dir! : Path => Try(Bool, [PathErr(IOErr), ..])         # a link is not followed
-is_sym_link! : Path => Try(Bool, [PathErr(IOErr), ..])
-size_in_bytes! : Path => Try(U64, [PathErr(IOErr), ..])
-is_executable! : Path => Try(Bool, [PathErr(IOErr), ..])  # any x bit, links followed
-is_readable! : Path => Try(Bool, [PathErr(IOErr), ..])    # any r bit, not this user's access
-is_writable! : Path => Try(Bool, [PathErr(IOErr), ..])    # any w bit, not this user's access
-time_accessed! : Path => Try(U128, [PathErr(IOErr), ..])  # nanoseconds since the epoch
-time_modified! : Path => Try(U128, [PathErr(IOErr), ..])
-time_created! : Path => Try(U128, [PathErr(IOErr), ..])
+type! : Path => Try([IsFile, IsDir, IsSymLink, IsOther], [PathErr(IOErr)])
+exists! : Path => Try(Bool, [PathErr(IOErr)])
+is_file! : Path => Try(Bool, [PathErr(IOErr)])        # a link is not followed
+is_dir! : Path => Try(Bool, [PathErr(IOErr)])         # a link is not followed
+is_sym_link! : Path => Try(Bool, [PathErr(IOErr)])
+size_in_bytes! : Path => Try(U64, [PathErr(IOErr)])
+is_executable! : Path => Try(Bool, [PathErr(IOErr)])  # any x bit, links followed
+is_readable! : Path => Try(Bool, [PathErr(IOErr)])    # any r bit, not this user's access
+is_writable! : Path => Try(Bool, [PathErr(IOErr)])    # any w bit, not this user's access
+time_accessed! : Path => Try(U128, [PathErr(IOErr)])  # nanoseconds since the epoch
+time_modified! : Path => Try(U128, [PathErr(IOErr)])
+time_created! : Path => Try(U128, [PathErr(IOErr)])
 
 # files
-read_bytes! : Path => Try(List(U8), [PathErr(IOErr), ..])
-read_utf8! : Path => Try(Str, [PathErr(IOErr), ..])
-write_bytes! : Path, List(U8) => Try({}, [PathErr(IOErr), ..])
-write_utf8! : Path, Str => Try({}, [PathErr(IOErr), ..])
-append_bytes! : Path, List(U8) => Try({}, [PathErr(IOErr), ..])   # creates the file if missing
-append_utf8! : Path, Str => Try({}, [PathErr(IOErr), ..])
-replace_utf8! : Path, Str, Str => Try({}, [PathErr(IOErr), ..])   # pattern, replacement; not atomic
-delete! : Path => Try({}, [PathErr(IOErr), ..])
-copy! : Path, Path => Try({}, [PathErr(IOErr), ..])               # from, to
-rename! : Path, Path => Try({}, [PathErr(IOErr), ..])             # from, to
+read_bytes! : Path => Try(List(U8), [PathErr(IOErr)])
+read_utf8! : Path => Try(Str, [PathErr(IOErr)])
+write_bytes! : Path, List(U8) => Try({}, [PathErr(IOErr)])
+write_utf8! : Path, Str => Try({}, [PathErr(IOErr)])
+append_bytes! : Path, List(U8) => Try({}, [PathErr(IOErr)])   # creates the file if missing
+append_utf8! : Path, Str => Try({}, [PathErr(IOErr)])
+replace_utf8! : Path, Str, Str => Try({}, [PathErr(IOErr)])   # pattern, replacement; not atomic
+delete! : Path => Try({}, [PathErr(IOErr)])
+copy! : Path, Path => Try({}, [PathErr(IOErr)])               # from, to
+rename! : Path, Path => Try({}, [PathErr(IOErr)])             # from, to
 
 # links
-hard_link! : Path, Path => Try({}, [PathErr(IOErr), ..])          # original, link
-sym_link! : Path, Path => Try({}, [PathErr(IOErr), ..])           # target, link
-read_sym_link! : Path => Try(Path, [PathErr(IOErr), ..])          # unresolved
+hard_link! : Path, Path => Try({}, [PathErr(IOErr)])          # original, link
+sym_link! : Path, Path => Try({}, [PathErr(IOErr)])           # target, link
+read_sym_link! : Path => Try(Path, [PathErr(IOErr)])          # unresolved
 
 # directories
-create_dir! : Path => Try({}, [PathErr(IOErr), ..])
-create_all! : Path => Try({}, [PathErr(IOErr), ..])
-delete_empty! : Path => Try({}, [PathErr(IOErr), ..])
-delete_all! : Path => Try({}, [PathErr(IOErr), ..])
-list! : Path => Try(List(Path), [PathErr(IOErr), ..])
+create_dir! : Path => Try({}, [PathErr(IOErr)])
+create_all! : Path => Try({}, [PathErr(IOErr)])
+delete_empty! : Path => Try({}, [PathErr(IOErr)])
+delete_all! : Path => Try({}, [PathErr(IOErr)])
+list! : Path => Try(List(Path), [PathErr(IOErr)])
 ```
 
 ### File
@@ -330,9 +330,9 @@ Reader :: { host : Host.FileReader }
 Writer :: { host : Host.FileWriter }
 
 # opening
-File.open_reader! : Path.Path => Try(Reader, [FileErr(IOErr), ..])
-File.open_writer! : Path.Path => Try(Writer, [FileErr(IOErr), ..])   # create or truncate
-File.open_append! : Path.Path => Try(Writer, [FileErr(IOErr), ..])   # create if missing
+File.open_reader! : Path.Path => Try(Reader, [FileErr(IOErr)])
+File.open_writer! : Path.Path => Try(Writer, [FileErr(IOErr)])   # create or truncate
+File.open_append! : Path.Path => Try(Writer, [FileErr(IOErr)])   # create if missing
 
 # reading
 read_line! : Reader => Try(List(U8), _)                   # through the newline; [] at EOF, LineTooLong past the cap
@@ -340,9 +340,9 @@ descriptor : Reader -> Fs.Descriptor
 to_inspect : Reader -> Str                                # "File.Reader(<opaque>)"
 
 # writing, unbuffered
-write! : Writer, List(U8) => Try({}, [FileErr(IOErr), ..])
-write_utf8! : Writer, Str => Try({}, [FileErr(IOErr), ..])
-line! : Writer, Str => Try({}, [FileErr(IOErr), ..])      # one write, newline included
+write! : Writer, List(U8) => Try({}, [FileErr(IOErr)])
+write_utf8! : Writer, Str => Try({}, [FileErr(IOErr)])
+line! : Writer, Str => Try({}, [FileErr(IOErr)])      # one write, newline included
 descriptor : Writer -> Fs.Descriptor
 to_inspect : Writer -> Str                                # "File.Writer(<opaque>)"
 from_host : Host.FileWriter -> Writer                     # for a writer opened through Fs, as trantor-files' Temp does
@@ -352,14 +352,14 @@ from_host : Host.FileWriter -> Writer                     # for a writer opened 
 
 ```roc
 # variables
-Env.var! : OsStr => Try(OsStr, [VarNotFound(OsStr), EnvErr(IOErr), ..])
-Env.var_str! : OsStr => Try(Str, [VarNotFound(OsStr), EnvErr(IOErr), InvalidStr(U64), ..])
+Env.var! : OsStr => Try(OsStr, [VarNotFound(OsStr), EnvErr(IOErr)])
+Env.var_str! : OsStr => Try(Str, [VarNotFound(OsStr), EnvErr(IOErr), InvalidStr(U64)])
 Env.dict! : () => List((OsStr, OsStr))                    # in no particular order
 
 # the process
-Env.cwd! : () => Try(Path.Path, [CwdUnavailable, ..])
-Env.set_cwd! : Path.Path => Try({}, [InvalidCwd(IOErr), ..])
-Env.exe_path! : () => Try(Path.Path, [ExePathUnavailable, ..])
+Env.cwd! : () => Try(Path.Path, [CwdUnavailable])
+Env.set_cwd! : Path.Path => Try({}, [InvalidCwd(IOErr)])
+Env.exe_path! : () => Try(Path.Path, [ExePathUnavailable])
 Env.temp_dir! : () => Path.Path
 Env.platform! : () => { arch : [X86, X64, ARM, AARCH64, OTHER(Str)], os : [LINUX, MACOS, WINDOWS, OTHER(Str)] }
 ```
@@ -367,25 +367,25 @@ Env.platform! : () => { arch : [X86, X64, ARM, AARCH64, OTHER(Str)], os : [LINUX
 ### Stdin
 
 ```roc
-Stdin.line! : () => Try(Str, [EndOfFile, StdinErr(IOErr), ..])
-Stdin.bytes! : () => Try(List(U8), [EndOfFile, StdinErr(IOErr), ..])   # at most 4,096 bytes a call
-Stdin.read_to_end! : () => Try(List(U8), [StdinErr(IOErr), ..])
+Stdin.line! : () => Try(Str, [EndOfFile, StdinErr(IOErr)])
+Stdin.bytes! : () => Try(List(U8), [EndOfFile, StdinErr(IOErr)])   # at most 4,096 bytes a call
+Stdin.read_to_end! : () => Try(List(U8), [StdinErr(IOErr)])
 ```
 
 ### Stdout
 
 ```roc
-Stdout.line! : Str => Try({}, [StdoutErr(IOErr), ..])
-Stdout.write! : Str => Try({}, [StdoutErr(IOErr), ..])
-Stdout.write_bytes! : List(U8) => Try({}, [StdoutErr(IOErr), ..])
+Stdout.line! : Str => Try({}, [StdoutErr(IOErr)])
+Stdout.write! : Str => Try({}, [StdoutErr(IOErr)])
+Stdout.write_bytes! : List(U8) => Try({}, [StdoutErr(IOErr)])
 ```
 
 ### Stderr
 
 ```roc
-Stderr.line! : Str => Try({}, [StderrErr(IOErr), ..])
-Stderr.write! : Str => Try({}, [StderrErr(IOErr), ..])
-Stderr.write_bytes! : List(U8) => Try({}, [StderrErr(IOErr), ..])
+Stderr.line! : Str => Try({}, [StderrErr(IOErr)])
+Stderr.write! : Str => Try({}, [StderrErr(IOErr)])
+Stderr.write_bytes! : List(U8) => Try({}, [StderrErr(IOErr)])
 ```
 
 ### Utc
@@ -411,8 +411,8 @@ Sleep.seconds! : F64 => {}                                # truncated to millise
 ### Random
 
 ```roc
-Random.seed_u64! : () => Try(U64, [RandomErr(IOErr), ..])
-Random.seed_u32! : () => Try(U32, [RandomErr(IOErr), ..])
+Random.seed_u64! : () => Try(U64, [RandomErr(IOErr)])
+Random.seed_u32! : () => Try(U32, [RandomErr(IOErr)])
 ```
 
 ### Locale
@@ -424,7 +424,7 @@ ParseErr : [Empty, EmptySubtag, InvalidCharacter, InvalidLanguage, MissingExtens
 # constructing
 parse : Str -> Try(Locale, ParseErr)                      # a BCP 47 tag, "en-US"
 from_quote : Str -> Try(Locale, [BadQuotedBytes(Str)])
-get! : () => Try(Locale, [NotAvailable, ..])              # the first of all!
+get! : () => Try(Locale, [NotAvailable])              # the first of all!
 all! : () => List(Locale)                                 # LANGUAGE, then the first of LC_ALL/LC_MESSAGES/LANG; none under C/POSIX
 
 # rendering and comparing

@@ -6,7 +6,7 @@ import pf.Cli
 import pf.Streams
 import pf.Clocks
 
-main! : List(OsStr) => Try({}, [Io(IOErr), ..])
+main! : List(OsStr) => Try({}, [Io(IOErr)])
 main! = |_args| {
 	out = Cli.get_stdout!({})
 	n = List.len(Cli.args!({}))

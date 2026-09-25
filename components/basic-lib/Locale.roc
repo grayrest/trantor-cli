@@ -88,7 +88,7 @@ Locale :: { raw : Str }.{
 	##
 	## Returns `Err(NotAvailable)` when no environment variable names a locale
 	## this module can parse, or when the locale in effect is C or POSIX.
-	get! : () => Try(Locale, [NotAvailable, ..])
+	get! : () => Try(Locale, [NotAvailable])
 	get! = || match List.first(all!()) {
 		Ok(locale) => Ok(locale)
 		Err(_) => widen_locale_err(Err(NotAvailable))
@@ -216,7 +216,7 @@ parse_err_to_str = |err|
 		SubtagTooLong => "Locale subtags must be at most 8 characters"
 	}
 
-widen_locale_err : Try(a, [NotAvailable]) -> Try(a, [NotAvailable, ..])
+widen_locale_err : Try(a, [NotAvailable]) -> Try(a, [NotAvailable])
 widen_locale_err = |result|
 	match result {
 		Ok(value) => Ok(value)

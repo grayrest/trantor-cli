@@ -61,15 +61,15 @@ File :: [].{
 		to_inspect = |_| "File.Writer(<opaque>)"
 
 		## Write bytes.
-		write! : Writer, List(U8) => Try({}, [FileErr(IOErr), ..])
+		write! : Writer, List(U8) => Try({}, [FileErr(IOErr)])
 		write! = |writer, bytes| Host.file_write!(writer.host, bytes).map_err(|FileErr(err)| FileErr(err))
 
 		## Write a string as UTF-8.
-		write_utf8! : Writer, Str => Try({}, [FileErr(IOErr), ..])
+		write_utf8! : Writer, Str => Try({}, [FileErr(IOErr)])
 		write_utf8! = |writer, str| Host.file_write!(writer.host, Str.to_utf8(str)).map_err(|FileErr(err)| FileErr(err))
 
 		## Write a string followed by a newline, in one write.
-		line! : Writer, Str => Try({}, [FileErr(IOErr), ..])
+		line! : Writer, Str => Try({}, [FileErr(IOErr)])
 		line! = |writer, str| Host.file_write!(writer.host, Str.to_utf8(str).append('\n')).map_err(|FileErr(err)| FileErr(err))
 	}
 
@@ -80,7 +80,7 @@ File :: [].{
 	## writer = File.open_writer!("out.txt")?
 	## writer.line!("first")?
 	## ```
-	open_writer! : Path.Path => Try(Writer, [FileErr(IOErr), ..])
+	open_writer! : Path.Path => Try(Writer, [FileErr(IOErr)])
 	open_writer! = |path|
 		Host.file_open_writer!(Path.to_raw(path))
 			.map_ok(|writer| Writer.{ host: writer })
@@ -88,7 +88,7 @@ File :: [].{
 
 	## Open a file for appending, creating it if missing. Every write lands at
 	## the end of the file, including when other processes append to it too.
-	open_append! : Path.Path => Try(Writer, [FileErr(IOErr), ..])
+	open_append! : Path.Path => Try(Writer, [FileErr(IOErr)])
 	open_append! = |path|
 		Host.file_open_append!(Path.to_raw(path))
 			.map_ok(|writer| Writer.{ host: writer })
@@ -106,7 +106,7 @@ File :: [].{
 	## sizing it would mean a `capacity` argument on the hosted
 	## `Fs.read_via_stream!` for a knob with no observable effect. A parameter
 	## the host discards is worse than an absent one, so it is absent.
-	open_reader! : Path.Path => Try(Reader, [FileErr(IOErr), ..])
+	open_reader! : Path.Path => Try(Reader, [FileErr(IOErr)])
 	open_reader! = |path|
 		Host.file_open_reader!(Path.to_raw(path))
 			.map_ok(|reader| Reader.{ host: reader })
