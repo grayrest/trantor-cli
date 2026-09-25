@@ -7,3 +7,4 @@ publish = false
 crate-type = ["staticlib", "rlib"]
 [dependencies]
 trantor-abi = "0.0.0"      # generated; the consumer's workspace patches it
+sync-io-core = { path = "../sync-io-core" }

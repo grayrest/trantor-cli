@@ -23,35 +23,124 @@ mod copy;
 
 /// The one policy knob: where the preopen points, and whether escapes are
 /// refused. Build it with `Root::unconfined` or `Root::confined`.
-pub struct Root {
-    pub base: PathBuf,
-    /// `Some` for a confined root: a directory HANDLE on `base`, not a string.
-    beneath: Option<cap_std::fs::Dir>,
+pub enum Root {
+    /// Ambient authority over this base — absolute paths anywhere are fine.
+    Unconfined(PathBuf),
+    /// Nothing outside the base, enforced at the moment each path is used.
+    Confined(Confinement),
 }
 
 impl Root {
     /// Ambient authority over `base` — absolute paths anywhere are fine.
     pub fn unconfined(base: PathBuf) -> Self {
-        Root { base, beneath: None }
+        Root::Unconfined(base)
     }
 
-    /// Nothing outside `base`, enforced at the moment each path is used.
+    /// Nothing outside the directory `find_base` names, enforced at the moment
+    /// each path is used.
     ///
-    /// This used to be a string check: canonicalize the candidate, test
-    /// `starts_with(base)`, then hand the ORIGINAL path to `std::fs`. Check and
-    /// use resolved the path twice, and anything that could swap a directory
-    /// component for a symlink between the two escaped. Measured with a
-    /// swapper flipping `sub` between a real directory and a link to outside,
-    /// against 20,000 reads of `sub/secret.txt` per run: 192, 970 and 323 of
-    /// them returned the OUTSIDE file's contents.
+    /// The base arrives as a thunk rather than a path because finding it is
+    /// itself an operation that fails: the confined build's base is the process
+    /// cwd, and `getcwd` answers ENOENT for a working directory deleted after
+    /// the process started. It was `current_dir().expect("cwd")` at the call
+    /// site and `open_ambient_dir(..).expect(..)` here, so a deleted or an
+    /// unreadable working directory panicked the confined build and exited 70
+    /// where the unconfined one answers the same call `NotFound` or
+    /// `PermissionDenied` and exits 0. Both halves now run in `Confinement`,
+    /// where the failure is the calling operation's `Io(IOErr)` and the two
+    /// backends agree here as they do everywhere else.
+    ///
+    /// The confinement itself used to be a string check: canonicalize the
+    /// candidate, test `starts_with(base)`, then hand the ORIGINAL path to
+    /// `std::fs`. Check and use resolved the path twice, and anything that
+    /// could swap a directory component for a symlink between the two escaped.
+    /// Measured with a swapper flipping `sub` between a real directory and a
+    /// link to outside, against 20,000 reads of `sub/secret.txt` per run: 192,
+    /// 970 and 323 of them returned the OUTSIDE file's contents.
     ///
     /// The tempting fix — hand the canonical path to the syscall instead —
     /// breaks every operation that must act on a link rather than its target:
     /// measured, `delete!` on a symlink then deleted the file it pointed at.
-    pub fn confined(base: PathBuf) -> Self {
-        let dir = cap_std::fs::Dir::open_ambient_dir(&base, cap_std::ambient_authority())
-            .expect("open the confined root");
-        Root { base, beneath: Some(dir) }
+    pub fn confined(find_base: fn() -> std::io::Result<PathBuf>) -> Self {
+        Root::Confined(Confinement { find_base, opened: std::sync::OnceLock::new() })
+    }
+
+    /// The confined root's base and handle, or `None` for an unconfined root.
+    fn opened(&self) -> std::io::Result<Option<&Opened>> {
+        match self {
+            Root::Unconfined(_) => Ok(None),
+            Root::Confined(c) => c.opened().map(Some),
+        }
+    }
+
+    /// The directory the preopen names.
+    fn base(&self) -> std::io::Result<&Path> {
+        match self {
+            Root::Unconfined(base) => Ok(base),
+            Root::Confined(c) => Ok(&c.opened()?.base),
+        }
+    }
+}
+
+/// A confined root, found and opened by the first call that needs it and then
+/// fixed for the process, its failure included.
+///
+/// Memoised rather than retried, which is a choice and not a detail: a working
+/// directory can be recreated and a mode can be put back. The root is the
+/// process's whole filesystem authority — `preopens` publishes it and every
+/// path resolved so far is relative to it — so a root that established itself
+/// later, at whatever directory then answers to the name, would let one run
+/// resolve the same relative path under two different roots, which is not
+/// confinement to *a* directory. The case that argues for a retry does not
+/// recover anyway: measured, once the working directory is removed, `getcwd`
+/// still answers ENOENT after the name is recreated, because the process holds
+/// the unlinked inode and not the name.
+pub struct Confinement {
+    find_base: fn() -> std::io::Result<PathBuf>,
+    opened: std::sync::OnceLock<Result<Opened, Failed>>,
+}
+
+/// A confined root once established: the directory HANDLE, not a string, and
+/// the path it was opened at, which is what descriptors beneath it are named
+/// by.
+struct Opened {
+    base: PathBuf,
+    dir: cap_std::fs::Dir,
+}
+
+impl Confinement {
+    fn opened(&self) -> std::io::Result<&Opened> {
+        match self.opened.get_or_init(|| self.open().map_err(Failed::from)) {
+            Ok(o) => Ok(o),
+            Err(f) => Err(f.error()),
+        }
+    }
+
+    fn open(&self) -> std::io::Result<Opened> {
+        let base = (self.find_base)()?;
+        let dir = cap_std::fs::Dir::open_ambient_dir(&base, cap_std::ambient_authority())?;
+        Ok(Opened { base, dir })
+    }
+}
+
+/// A root that could not be established, kept so that every later call answers
+/// the same thing. `std::io::Error` is not `Clone`; the two things anything
+/// downstream reads off one are — the kind, which picks the `IOErr` tag, and
+/// the text, which an `Other` carries.
+struct Failed {
+    kind: std::io::ErrorKind,
+    message: String,
+}
+
+impl From<std::io::Error> for Failed {
+    fn from(e: std::io::Error) -> Self {
+        Failed { kind: e.kind(), message: e.to_string() }
+    }
+}
+
+impl Failed {
+    fn error(&self) -> std::io::Error {
+        std::io::Error::new(self.kind, self.message.clone())
     }
 }
 
@@ -59,13 +148,19 @@ impl Root {
 pub enum Desc {
     Dir(PathBuf),
     File(std::fs::File),
+    /// Preopen 0, named rather than resolved. `preopens!` has no error channel
+    /// and a root that cannot be established has no path to publish, so the
+    /// descriptor stands for "the root, wherever it turns out to be" and the
+    /// operation that uses it is the one that reports why there is none.
+    Root,
 }
 
 /// The directory a descriptor resolves paths against. A file has none: it used
 /// to answer `.`, so an `*_at!` call given a `File.Writer`'s descriptor read
 /// and wrote relative to the process cwd, not even the userland one.
-fn dir_of(d: &Desc) -> std::io::Result<PathBuf> {
+fn dir_of(r: &Root, d: &Desc) -> std::io::Result<PathBuf> {
     match d {
+        Desc::Root => r.base().map(Path::to_path_buf),
         Desc::Dir(p) => Ok(p.clone()),
         Desc::File(_) => Err(std::io::Error::new(std::io::ErrorKind::NotADirectory, "a file descriptor is not a directory to resolve paths against")),
     }
@@ -223,9 +318,9 @@ pub fn resolve<'a>(root: &'a Root, dir: &Path, rel: &[u8]) -> std::io::Result<Ta
     }
     let p = Path::new(std::ffi::OsStr::from_bytes(rel));
     let cand = if p.is_absolute() { p.to_path_buf() } else { dir.join(p) };
-    match &root.beneath {
+    match root.opened()? {
         None => Ok(Target::Ambient(cand)),
-        Some(d) => Ok(Target::Beneath(d, relative_to_root(&root.base, &cand)?)),
+        Some(o) => Ok(Target::Beneath(&o.dir, relative_to_root(&o.base, &cand)?)),
     }
 }
 
@@ -256,9 +351,14 @@ pub mod ops {
     /// `Fs.preopens! : {} => List(Descriptor)`. One root today; a list because
     /// that is the shape wasi:filesystem/preopens has and the shape a second
     /// preopen would need.
-    pub fn preopens(r: &Root) -> RocList<RocBox> {
+    ///
+    /// The descriptor names the root rather than the path it resolves to,
+    /// because this signature has nowhere to put the reason there is no path:
+    /// answering the empty list instead would crash the layer above, which is
+    /// right to expect a preopen.
+    pub fn preopens() -> RocList<RocBox> {
         let h = abi::host();
-        let items = [abi::resource::new(Desc::Dir(r.base.clone()))];
+        let items = [abi::resource::new(Desc::Root)];
         unsafe { RocList::from_slice(&items, h) }
     }
 
@@ -278,7 +378,7 @@ pub mod ops {
             }
             Target::Beneath(h, p) => {
                 if follow { h.open_dir(&p)?; } else { cap_fs_ext::DirExt::open_dir_nofollow(h, &p)?; }
-                Ok(Desc::Dir(r.base.join(p)))
+                Ok(Desc::Dir(r.base()?.join(p)))
             }
         }
     }
@@ -353,7 +453,7 @@ pub mod ops {
         unsafe {
             abi::resource::with(d as RocBox, |x: &mut Desc| match x {
                 Desc::File(f) => f.try_clone(),
-                Desc::Dir(_) => Err(is_a_directory()),
+                Desc::Dir(_) | Desc::Root => Err(is_a_directory()),
             })
         }
     }
@@ -444,7 +544,7 @@ pub mod ops {
 
     fn with_path<T>(r: &Root, d: *mut u64, path: RocListWith<u8, false>, f: impl FnOnce(Target) -> std::io::Result<T>) -> std::io::Result<T> {
         let rel = bytes(&path); unsafe { path.decref(abi::host()) };
-        let dir = unsafe { abi::resource::with(d as RocBox, |x: &mut Desc| dir_of(x)) }?;
+        let dir = unsafe { abi::resource::with(d as RocBox, |x: &mut Desc| dir_of(r, x)) }?;
         resolve(r, &dir, &rel).and_then(f)
     }
 
@@ -562,10 +662,23 @@ pub mod ops {
     pub type HashFlags = AnonStructA87cda150656e1c4;
     type HashValue = AnonStruct9ddd559897dcea60;
 
+    /// The key the hash below is taken under, drawn once for the process.
+    /// `RandomState` is where a `HashMap` gets its own, for the same reason.
+    static HASH_KEYS: std::sync::OnceLock<std::collections::hash_map::RandomState> =
+        std::sync::OnceLock::new();
+
     /// WASI's `metadata-hash-at`: equal for two paths exactly when they are the
     /// same object, without handing out device and inode numbers (D-S2-25).
-    /// Two SipHash passes over (device, inode) with fixed keys, so it is stable
-    /// for the life of the process.
+    /// Two SipHash passes over (device, inode) under `HASH_KEYS`, so the value
+    /// is stable for the life of the process and says nothing outside it.
+    ///
+    /// The keys were fixed — `DefaultHasher::new()` is keyed (0, 0), a pure
+    /// function of its input — and the input carries little entropy: an app can
+    /// stat its own files to learn `dev`, then walk `ino`, well under 2^32 on a
+    /// real filesystem, until the published value matches. That recovers the two
+    /// numbers the hash exists to withhold, which made the withholding a matter
+    /// of obscurity. Under a per-process key it is what it claims to be: an
+    /// identity to compare, out of which nothing can be read back.
     pub fn metadata_hash_at(r: &Root, d: *mut u64, path: RocListWith<u8, false>, flags: HashFlags) -> FsMetadataHashAtResult {
         let identity = with_path(r, d, path, |tg| match tg {
             Target::Ambient(p) => {
@@ -581,9 +694,10 @@ pub mod ops {
         });
         match identity {
             Ok(id) => {
+                let keys = HASH_KEYS.get_or_init(std::collections::hash_map::RandomState::new);
                 let half = |salt: u64| {
-                    use std::hash::{Hash, Hasher};
-                    let mut hasher = std::hash::DefaultHasher::new();
+                    use std::hash::{BuildHasher, Hash, Hasher};
+                    let mut hasher = keys.build_hasher();
                     (id, salt).hash(&mut hasher);
                     hasher.finish()
                 };
@@ -762,7 +876,7 @@ pub mod ops {
     fn two(r: &Root, d: *mut u64, a: RocListWith<u8, false>, b: RocListWith<u8, false>, f: impl FnOnce(Target, Target) -> std::io::Result<()>) -> FsWriteFileAtResult {
         let ra = bytes(&a); unsafe { a.decref(abi::host()) };
         let rb = bytes(&b); unsafe { b.decref(abi::host()) };
-        let dir = unsafe { abi::resource::with(d as RocBox, |x: &mut Desc| dir_of(x)) };
+        let dir = unsafe { abi::resource::with(d as RocBox, |x: &mut Desc| dir_of(r, x)) };
         unit(dir.and_then(|dir| resolve(r, &dir, &ra).and_then(|pa| resolve(r, &dir, &rb).and_then(|pb| f(pa, pb)))))
     }
     /// Both ends must be on the same backend; `resolve` guarantees it, since a
@@ -847,8 +961,8 @@ pub mod ops {
     pub fn copy_file_at(r: &Root, sd: *mut u64, sp: RocListWith<u8, false>, dd: *mut u64, dp: RocListWith<u8, false>) -> FsWriteFileAtResult {
         let src_rel = bytes(&sp); unsafe { sp.decref(abi::host()) };
         let dst_rel = bytes(&dp); unsafe { dp.decref(abi::host()) };
-        let src_dir = unsafe { abi::resource::with(sd as RocBox, |x: &mut Desc| dir_of(x)) };
-        let dst_dir = unsafe { abi::resource::with(dd as RocBox, |x: &mut Desc| dir_of(x)) };
+        let src_dir = unsafe { abi::resource::with(sd as RocBox, |x: &mut Desc| dir_of(r, x)) };
+        let dst_dir = unsafe { abi::resource::with(dd as RocBox, |x: &mut Desc| dir_of(r, x)) };
         unit(src_dir.and_then(|src_dir| dst_dir.and_then(|dst_dir| {
             let from = resolve(r, &src_dir, &src_rel)?;
             let to = resolve(r, &dst_dir, &dst_rel)?;
@@ -860,8 +974,8 @@ pub mod ops {
     pub fn copy_dir_at(r: &Root, sd: *mut u64, sp: RocListWith<u8, false>, dd: *mut u64, dp: RocListWith<u8, false>) -> FsWriteFileAtResult {
         let src_rel = bytes(&sp); unsafe { sp.decref(abi::host()) };
         let dst_rel = bytes(&dp); unsafe { dp.decref(abi::host()) };
-        let src_dir = unsafe { abi::resource::with(sd as RocBox, |x: &mut Desc| dir_of(x)) };
-        let dst_dir = unsafe { abi::resource::with(dd as RocBox, |x: &mut Desc| dir_of(x)) };
+        let src_dir = unsafe { abi::resource::with(sd as RocBox, |x: &mut Desc| dir_of(r, x)) };
+        let dst_dir = unsafe { abi::resource::with(dd as RocBox, |x: &mut Desc| dir_of(r, x)) };
         unit(src_dir.and_then(|src_dir| dst_dir.and_then(|dst_dir| {
             let from = resolve(r, &src_dir, &src_rel)?;
             let to = resolve(r, &dst_dir, &dst_rel)?;
@@ -924,7 +1038,7 @@ macro_rules! exports {
             static ROOT: std::sync::OnceLock<$crate::Root> = std::sync::OnceLock::new();
             fn root() -> &'static $crate::Root { ROOT.get_or_init(|| $root) }
             use trantor_abi::*;
-            #[unsafe(no_mangle)] pub extern "C-unwind" fn [<trantor__ $prefix __preopens>]() -> $crate::RocList<$crate::RocBox> { $crate::ops::preopens(root()) }
+            #[unsafe(no_mangle)] pub extern "C-unwind" fn [<trantor__ $prefix __preopens>]() -> $crate::RocList<$crate::RocBox> { $crate::ops::preopens() }
             #[unsafe(no_mangle)] pub extern "C-unwind" fn [<trantor__ $prefix __open_with_flags_at>](d: *mut u64, p: RocListWith<u8, false>, f: $crate::ops::OpenFlags) -> FsOpenWithFlagsAtResult { $crate::ops::open_with_flags_at(root(), d, p, f) }
             #[unsafe(no_mangle)] pub extern "C-unwind" fn [<trantor__ $prefix __read_via_stream>](d: *mut u64) -> FsReadViaStreamResult { $crate::ops::read_via_stream(root(), d) }
             #[unsafe(no_mangle)] pub extern "C-unwind" fn [<trantor__ $prefix __write_via_stream>](d: *mut u64, o: u64) -> FsWriteViaStreamResult { $crate::ops::write_via_stream(root(), d, o) }
