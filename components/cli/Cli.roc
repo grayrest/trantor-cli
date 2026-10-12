@@ -1,6 +1,6 @@
-import IOErr exposing [IOErr]
+import IOErr
 import Streams
-import OsStr exposing [OsStr]
+import OsStr
 import CliEnv
 import CliExit
 import CliIn

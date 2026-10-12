@@ -1,10 +1,10 @@
 app [main!] { pf: platform "../target/trantor/myapp/platform/main.roc" }
 
-import pf.OsStr exposing [OsStr]
+import pf.OsStr
 import pf.Stdout
 import pf.Env
 import pf.Path
-import pf.IOErr exposing [IOErr]
+import pf.IOErr
 import pf.Fs
 
 ## One name and one spelling, given as arguments, against every operation: the

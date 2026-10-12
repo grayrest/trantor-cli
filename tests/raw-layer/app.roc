@@ -1,7 +1,7 @@
 app [main!] { pf: platform "../target/trantor/myapp/platform/main.roc" }
 
-import pf.OsStr exposing [OsStr]
-import pf.IOErr exposing [IOErr]
+import pf.OsStr
+import pf.IOErr
 import pf.Cli
 import pf.Streams
 import pf.Clocks

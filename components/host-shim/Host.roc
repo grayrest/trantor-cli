@@ -2,8 +2,8 @@
 ## primitives (P4/D2). basic-cli's own Stdout.roc/Stderr.roc/Stdin.roc
 ## `import Host` and compile here UNCHANGED. Each stdout/stderr call mints the
 ## process stream resource and drops it after the write (drop-balanced by B0).
-import IOErr exposing [IOErr]
-import OsStr exposing [OsStr]
+import IOErr
+import OsStr
 import Streams
 import CliOut
 import CliIn

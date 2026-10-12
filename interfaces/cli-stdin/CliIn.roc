@@ -1,4 +1,4 @@
-import IOErr exposing [IOErr]
+import IOErr
 import Streams
 CliIn :: [].{
 	get_stdin! : {} => Streams.InputStream

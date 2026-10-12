@@ -1,14 +1,14 @@
 app [main!] { pf: platform "../target/trantor/myapp/platform/main.roc" }
 
-import pf.OsStr exposing [OsStr]
+import pf.OsStr
 import pf.Stdout
 import pf.Env
-import pf.Path exposing [Path]
+import pf.Path
 import pf.File
 import pf.Fs
 import pf.Cli
 import pf.FdHandoff
-import pf.IOErr exposing [IOErr]
+import pf.IOErr
 
 ## What `/dev/fd/N` reads as: a dup of fd N, so the file behind the number.
 through! : I32 => Str

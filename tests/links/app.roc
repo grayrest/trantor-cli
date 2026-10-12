@@ -1,8 +1,8 @@
 app [main!] { pf: platform "../target/trantor/myapp/platform/main.roc" }
 
-import pf.OsStr exposing [OsStr]
+import pf.OsStr
 import pf.Stdout
-import pf.Path exposing [Path]
+import pf.Path
 
 outcome : Try(Str, _) -> Str
 outcome = |r| match r {

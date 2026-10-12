@@ -1,5 +1,5 @@
-import IOErr exposing [IOErr]
-import OsStr exposing [OsStr]
+import IOErr
+import OsStr
 ## roc:cli/environment primitives, shaped after wasi:cli/environment.
 ##
 ## Lists cross whole. They used to arrive as count+at pairs because the glue of

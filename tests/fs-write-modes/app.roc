@@ -1,9 +1,9 @@
 app [main!] { pf: platform "../target/trantor/myapp/platform/main.roc" }
 
-import pf.OsStr exposing [OsStr]
+import pf.OsStr
 import pf.Stdout
 import pf.Env
-import pf.Path exposing [Path]
+import pf.Path
 import pf.File
 import pf.Fs
 import pf.Streams

@@ -1,6 +1,6 @@
 import Host
 import Fs
-import IOErr exposing [IOErr]
+import IOErr
 import Path
 
 ## Open files for incremental, buffered reading.

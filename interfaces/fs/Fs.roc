@@ -1,4 +1,4 @@
-import IOErr exposing [IOErr]
+import IOErr
 import Streams
 ## roc:filesystem primitives: WASI's capability model. Every op is relative to a
 ## Descriptor (a preopened directory or an opened file); there is no ambient

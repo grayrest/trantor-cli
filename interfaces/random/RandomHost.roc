@@ -1,4 +1,4 @@
-import IOErr exposing [IOErr]
+import IOErr
 ## roc:random/random. Named RandomHost so basic-cli's derived `Random.roc` keeps its name.
 RandomHost :: [].{
 	seed_u64! : {} => Try(U64, [Io(IOErr)])

@@ -1,6 +1,6 @@
 app [main!] { pf: platform "../target/trantor/myapp/platform/main.roc" }
 
-import pf.OsStr exposing [OsStr]
+import pf.OsStr
 import pf.Cli
 
 ## No argument beyond the binary: fall off the end. One: `Cli.exit!(7)`. Two:

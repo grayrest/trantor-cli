@@ -1,4 +1,4 @@
-import IOErr exposing [IOErr]
+import IOErr
 ## roc:sync-io/streams: the unified blocking stream substrate. File reads,
 ## socket reads and stdin all yield an InputStream; stdout/sockets take an
 ## OutputStream. Both are resources (refcounted opaque host handles, P5).

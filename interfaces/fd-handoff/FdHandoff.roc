@@ -1,5 +1,5 @@
 import Fs
-import IOErr exposing [IOErr]
+import IOErr
 import Streams
 ## The OS file descriptor behind a stream or an open file, for another
 ## package's host to hand to the OS — a child process's stdio, today.

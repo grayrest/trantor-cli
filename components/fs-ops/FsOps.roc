@@ -1,5 +1,5 @@
-import IOErr exposing [IOErr]
-import OsStr exposing [OsStr]
+import IOErr
+import OsStr
 import Fs
 import Cwd
 import CliEnv
