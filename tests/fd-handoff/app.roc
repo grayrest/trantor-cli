@@ -30,12 +30,32 @@ abs! = |name| {
 	Str.to_utf8("${Path.display(cwd)}/${name}")
 }
 
+## Hands every descriptor in `held` to the host, so none is released, and its
+## file closed, before this call. The compiler drops a value after its last
+## use, not at the end of its scope, and a list's length uses none of its
+## elements: measured, ec5981 closed all 61 files on entering the arm below,
+## even with `held.len()` read after the handoff, and 620d04 did the same to a
+## list the loop returned. A file descriptor has no directory to stat in, so
+## each call refuses without a syscall.
+keep_open! : List(Fs.Descriptor) => {}
+keep_open! = |held| match held.first() {
+	Ok(d) => {
+		_ = Fs.stat_at!(d, [], { follow_symlinks: True })
+		keep_open!(held.drop_first(1))
+	}
+	Err(_) => {}
+}
+
 ## Opens `handed.txt` until the process has no descriptors left, keeping every
 ## one alive, then asks for a duplicate of stdout.
 exhausted! : List(Fs.Descriptor) => Str
 exhausted! = |held| match Fs.open_at!(Fs.preopens!({}).first() ?? crash("no preopen"), abs!("handed.txt"), {}) {
 	Ok(d) => if held.len() > 100000 { "never-ran-out" } else { exhausted!(held.append(d)) }
-	Err(_) => answer(FdHandoff.output_fd!(Cli.get_stdout!({})))
+	Err(_) => {
+		handoff = answer(FdHandoff.output_fd!(Cli.get_stdout!({})))
+		keep_open!(held)
+		handoff
+	}
 }
 
 ## Opens readers until one is refused, reading from each as it is made. A
